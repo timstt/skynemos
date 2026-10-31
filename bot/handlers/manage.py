@@ -14,15 +14,16 @@ from aiogram.utils.deep_linking import create_start_link
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot import keyboards, texts
-from bot.db.models import Pool, User, utcnow
+from bot.db.models import Frequency, Pool, User, utcnow
 from bot.handlers.common import show
 from bot.keyboards.callbacks import MemberAction, MemberCB, PoolAction, PoolCB
 from bot.notifier import notify
+from bot.services.billing import next_occurrence_year
 from bot.services.errors import DomainError, ErrorCode
 from bot.services.money import parse_amount
 from bot.services.payments import PaymentService
 from bot.services.pools import PoolService, ShareChange
-from bot.services.validation import validate_billing_day
+from bot.services.validation import parse_day_month, validate_billing_day
 from bot.states import EditPool
 
 router = Router(name="manage")
@@ -170,6 +171,8 @@ async def start_edit(
     if pool is None:
         return
     new_state, prompt = _EDIT_STATES[callback_data.action]
+    if callback_data.action is PoolAction.EDIT_DAY and pool.frequency is not Frequency.MONTHLY:
+        new_state, prompt = EditPool.billing_date, texts.ask_new_date
     await state.set_state(new_state)
     await state.update_data(pool_id=pool.id)
     await show(callback, prompt(pool), keyboards.back_to_pool_kb(pool.id))
@@ -223,6 +226,33 @@ async def got_new_day(
     except DomainError as exc:
         await message.answer(texts.error_text(exc))
         if exc.code is not ErrorCode.INVALID_BILLING_DAY:
+            await state.clear()
+        return
+    members = await service.list_active_members(pool)
+    await _notify_users(bot, session, (m.user for m in members), texts.member_day_changed(pool))
+    await _finish_edit(message, state, service, pool)
+
+
+@router.message(EditPool.billing_date, F.text)
+async def got_new_date(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    user: User,
+    bot: Bot,
+    tz: ZoneInfo,
+) -> None:
+    service = PoolService(session)
+    try:
+        day, month = parse_day_month(message.text or "")
+        pool = await service.get_owned_pool((await state.get_data())["pool_id"], user)
+        year = None
+        if pool.frequency is Frequency.ONCE:
+            year = next_occurrence_year(day, month, utcnow().astimezone(tz).date())
+        pool = await service.update_billing_date(pool.id, user, day, month, year)
+    except DomainError as exc:
+        await message.answer(texts.error_text(exc))
+        if exc.code is not ErrorCode.INVALID_DATE:
             await state.clear()
         return
     members = await service.list_active_members(pool)

@@ -7,12 +7,22 @@ from collections.abc import Sequence
 from datetime import date, datetime
 from html import escape as esc
 
-from bot.db.models import Member, Payment, PaymentStatus, Pool, User
+from bot.db.models import Frequency, Member, Payment, PaymentStatus, Pool, User
 from bot.services.details import format_details_html
 from bot.services.errors import DomainError, ErrorCode
 from bot.services.money import format_money
 from bot.services.payments import PoolStatus
 from bot.services.pools import MAX_MEMBERS, JoinPreview, JoinResult, JoinStatus, NewPoolData
+
+MONTHS = (
+    "січень", "лютий", "березень", "квітень", "травень", "червень",
+    "липень", "серпень", "вересень", "жовтень", "листопад", "грудень",
+)  # fmt: skip
+MONTHS_GENITIVE = (
+    "січня", "лютого", "березня", "квітня", "травня", "червня",
+    "липня", "серпня", "вересня", "жовтня", "листопада", "грудня",
+)  # fmt: skip
+
 
 # --- загальне ----------------------------------------------------------------
 
@@ -115,6 +125,9 @@ ERRORS: dict[ErrorCode, str] = {
         "або <code>149,99</code>."
     ),
     ErrorCode.INVALID_BILLING_DAY: "День списання — це число від 1 до 31. Спробуй ще раз.",
+    ErrorCode.INVALID_DATE: (
+        "Не розумію дату 🤔 Напиши як <code>дд.мм</code>, наприклад <code>05.03</code>."
+    ),
     ErrorCode.INVALID_DETAILS: "Реквізити не можуть бути порожніми й довшими за 500 символів.",
     ErrorCode.POOL_NOT_FOUND: (
         "Цей збір не знайдено 😕 Можливо, посилання застаріло або збір видалено. "
@@ -168,23 +181,86 @@ def plain_name(user: User) -> str:
 
 ASK_TITLE = (
     "Створюємо новий збір 💸\n\n"
-    "<b>Крок 1/5.</b> Як він називається? Наприклад: <i>YouTube Family</i>.\n\n"
+    "<b>Крок 1/6.</b> Як він називається? Наприклад: <i>YouTube Family</i>.\n\n"
     "Скасувати можна будь-коли: /cancel"
 )
-ASK_AMOUNT = "<b>Крок 2/5.</b> Яка загальна сума на місяць у гривнях? Наприклад: <code>300</code>."
+ASK_AMOUNT = (
+    "<b>Крок 2/6.</b> Яка сума одного списання в гривнях? Наприклад: <code>300</code>.\n"
+    "Як часто списується — оберемо далі."
+)
+ASK_FREQUENCY = "<b>Крок 3/6.</b> Як часто списуються гроші?"
 ASK_BILLING_DAY = (
-    "<b>Крок 3/5.</b> Якого числа щомісяця списуються гроші? Напиши число від 1 до 31.\n"
+    "<b>Крок 4/6.</b> Якого числа щомісяця списуються гроші? Напиши число від 1 до 31.\n"
     "Цього дня я надішлю учасникам нагадування."
 )
-ASK_INCLUDE_OWNER = "<b>Крок 4/5.</b> Ти теж платиш свою частку, як усі учасники?"
+ASK_INCLUDE_OWNER = "<b>Крок 5/6.</b> Ти теж платиш свою частку, як усі учасники?"
 ASK_DETAILS = (
-    "<b>Крок 5/5.</b> Куди скидати гроші? Номер картки, посилання на банку mono "
+    "<b>Крок 6/6.</b> Куди скидати гроші? Номер картки, посилання на банку mono "
     "чи інші реквізити, як ти хочеш їх показати учасникам."
 )
 EXPECT_TEXT = "Напиши, будь ласка, текстом ✍️"
 EXPECT_BUTTON = "Обери варіант кнопкою вище 👆"
 LOOKS_LIKE_COMMAND = "Схоже на команду. Щоб вийти зі створення збору, натисни /cancel."
 CREATE_SESSION_EXPIRED = "Ця кнопка вже неактуальна. Почни заново: /new"
+
+
+BTN_FREQ_MONTHLY = "🔁 Щомісяця"
+BTN_FREQ_YEARLY = "📆 Раз на рік"
+BTN_FREQ_ONCE = "1️⃣ Один раз"
+
+_FREQUENCY_LABELS = {
+    Frequency.MONTHLY: BTN_FREQ_MONTHLY,
+    Frequency.YEARLY: BTN_FREQ_YEARLY,
+    Frequency.ONCE: BTN_FREQ_ONCE,
+}
+
+
+def frequency_label(frequency: Frequency) -> str:
+    return _FREQUENCY_LABELS[frequency]
+
+
+def per_text(frequency: Frequency) -> str:
+    return {Frequency.MONTHLY: "на місяць", Frequency.YEARLY: "на рік"}.get(frequency, "разово")
+
+
+def ask_billing_date(frequency: Frequency) -> str:
+    what = (
+        "Якого дня щороку списуються гроші?"
+        if frequency is Frequency.YEARLY
+        else "На яку дату треба зібрати гроші?"
+    )
+    return (
+        f"<b>Крок 4/6.</b> {what} Напиши дату як <code>дд.мм</code>, наприклад <code>05.03</code>."
+    )
+
+
+def schedule_text(
+    frequency: Frequency, day: int, month: int | None = None, year: int | None = None
+) -> str:
+    """«щомісяця, 5 числа», «щороку, 5 березня», «разово, 20 грудня 2026»."""
+    if frequency is Frequency.MONTHLY:
+        return f"щомісяця, {billing_day_text(day)}"
+    assert month is not None
+    date_text = f"{day} {MONTHS_GENITIVE[month - 1]}"
+    if frequency is Frequency.YEARLY:
+        leap_note = " (у невисокосні роки — 28 лютого)" if (day, month) == (29, 2) else ""
+        return f"щороку, {date_text}{leap_note}"
+    return f"разово, {date_text} {year}"
+
+
+def _data_schedule_text(data: NewPoolData) -> str:
+    return schedule_text(data.frequency, data.billing_day, data.billing_month, data.billing_year)
+
+
+def pool_schedule_text(pool: Pool) -> str:
+    return schedule_text(pool.frequency, pool.billing_day, pool.billing_month, pool.billing_year)
+
+
+def ask_new_date(pool: Pool) -> str:
+    return (
+        f"Зараз списання: {pool_schedule_text(pool)}.\n"
+        f"Напиши нову дату як <code>дд.мм</code>.{EDIT_HINT}"
+    )
 
 
 def billing_day_text(day: int) -> str:
@@ -198,8 +274,8 @@ def confirm_pool(data: NewPoolData) -> str:
     return (
         "Перевір, чи все правильно:\n\n"
         f"📌 <b>{esc(data.title)}</b>\n"
-        f"💰 Сума: {format_money(data.total_amount_kop)} на місяць\n"
-        f"📅 Списання: {billing_day_text(data.billing_day)}\n"
+        f"💰 Сума: {format_money(data.total_amount_kop)} {per_text(data.frequency)}\n"
+        f"📅 Списання: {_data_schedule_text(data)}\n"
         f"👑 Ти в розподілі: {'так' if data.include_owner else 'ні'}\n"
         f"💳 Реквізити: {format_details_html(data.payment_details)}"
     )
@@ -223,8 +299,8 @@ def join_preview(preview: JoinPreview) -> str:
     return (
         f"<b>{mention(pool.owner)}</b> запрошує тебе до збору "
         f"<b>{esc(pool.title)}</b> 💸\n\n"
-        f"💰 Загальна сума: {format_money(pool.total_amount_kop)} на місяць\n"
-        f"📅 Списання: {billing_day_text(pool.billing_day)}\n"
+        f"💰 Загальна сума: {format_money(pool.total_amount_kop)} {per_text(pool.frequency)}\n"
+        f"📅 Списання: {pool_schedule_text(pool)}\n"
         f"👥 Учасників зараз: {preview.members_count}\n"
         f"🧮 Твоя частка буде: <b>{format_money(preview.estimated_share_kop)}</b>"
         f"{owner_note}\n\n"
@@ -241,8 +317,9 @@ def joined(result: JoinResult) -> str:
     hello = "З поверненням" if result.status is JoinStatus.REJOINED else "Готово"
     return (
         f"{hello}! Ти в зборі <b>{esc(pool.title)}</b> 🎉\n\n"
-        f"🧮 Твоя частка: <b>{format_money(result.member.share_kop)}</b> на місяць\n"
-        f"📅 Я нагадаю {billing_day_text(pool.billing_day)}.\n"
+        f"🧮 Твоя частка: <b>{format_money(result.member.share_kop)}</b> "
+        f"{per_text(pool.frequency)}\n"
+        f"📅 Списання: {pool_schedule_text(pool)}. Я нагадаю в цей день.\n"
         f"💳 Реквізити: {format_details_html(pool.payment_details)}\n\n"
         "Якщо хтось ще приєднається, частка може змінитися з наступного місяця."
     )
@@ -279,8 +356,8 @@ def _pool_header(pool: Pool) -> list[str]:
     if pool.is_paused:
         lines.append("⏸ <i>Збір на паузі</i>")
     lines += [
-        f"💰 {format_money(pool.total_amount_kop)} на місяць",
-        f"📅 Списання: {billing_day_text(pool.billing_day)}",
+        f"💰 {format_money(pool.total_amount_kop)} {per_text(pool.frequency)}",
+        f"📅 Списання: {pool_schedule_text(pool)}",
     ]
     return lines
 
@@ -325,15 +402,6 @@ def invite_link(pool: Pool, link: str) -> str:
 
 
 # --- платежі -------------------------------------------------------------------
-
-MONTHS = (
-    "січень", "лютий", "березень", "квітень", "травень", "червень",
-    "липень", "серпень", "вересень", "жовтень", "листопад", "грудень",
-)  # fmt: skip
-MONTHS_GENITIVE = (
-    "січня", "лютого", "березня", "квітня", "травня", "червня",
-    "липня", "серпня", "вересня", "жовтня", "листопада", "грудня",
-)  # fmt: skip
 
 
 def period_name(period: date) -> str:
@@ -495,7 +563,11 @@ def pool_status(status: PoolStatus) -> str:
     pool = status.pool
     if status.period is None:
         header = f"📌 <b>{esc(pool.title)}</b>"
-        body = f"Перше списання {short_date(status.next_billing)}."
+        body = (
+            f"Перше списання {short_date(status.next_billing)}."
+            if status.next_billing
+            else "Більше списань не буде."
+        )
     else:
         header = f"📌 <b>{esc(pool.title)}</b> — {period_name(status.period)}"
         lines = [_status_line(p) for p in status.payments]
@@ -530,15 +602,13 @@ NEXT_CYCLE_NOTE = "Діє з наступного списання: уже ви�
 def ask_new_amount(pool: Pool) -> str:
     return (
         f"Зараз загальна сума <b>{esc(pool.title)}</b>: {format_money(pool.total_amount_kop)}.\n"
-        f"Напиши нову суму на місяць у гривнях.\n<i>{NEXT_CYCLE_NOTE}</i>{EDIT_HINT}"
+        f"Напиши нову суму {per_text(pool.frequency)} у гривнях.\n"
+        f"<i>{NEXT_CYCLE_NOTE}</i>{EDIT_HINT}"
     )
 
 
 def ask_new_day(pool: Pool) -> str:
-    return (
-        f"Зараз списання {billing_day_text(pool.billing_day)}.\n"
-        f"Напиши новий день від 1 до 31.{EDIT_HINT}"
-    )
+    return f"Зараз списання: {pool_schedule_text(pool)}.\nНапиши новий день від 1 до 31.{EDIT_HINT}"
 
 
 def ask_new_details(pool: Pool) -> str:
@@ -642,10 +712,9 @@ PAUSED_ALERT = (
 )
 
 
-def resumed_alert(next_billing: datetime) -> str:
-    return (
-        f"▶️ Збір відновлено. Наступне списання {short_date(next_billing)}. Учасників повідомлено."
-    )
+def resumed_alert(next_billing: datetime | None) -> str:
+    when = f" Наступне списання {short_date(next_billing)}." if next_billing else ""
+    return f"▶️ Збір відновлено.{when} Учасників повідомлено."
 
 
 def invite_regenerated(pool: Pool, link: str) -> str:
@@ -693,10 +762,7 @@ def member_share_changed(pool: Pool, old_kop: int, new_kop: int) -> str:
 
 
 def member_day_changed(pool: Pool) -> str:
-    return (
-        f"📅 У зборі <b>{esc(pool.title)}</b> новий день списання: "
-        f"{billing_day_text(pool.billing_day)}."
-    )
+    return f"📅 У зборі <b>{esc(pool.title)}</b> новий день списання: {pool_schedule_text(pool)}."
 
 
 def member_details_changed(pool: Pool) -> str:
@@ -717,11 +783,9 @@ def member_pool_paused(pool: Pool) -> str:
     return f"⏸ Збір <b>{esc(pool.title)}</b> поставлено на паузу. Поки що нічого скидати не треба."
 
 
-def member_pool_resumed(pool: Pool, next_billing: datetime) -> str:
-    return (
-        f"▶️ Збір <b>{esc(pool.title)}</b> знову активний. "
-        f"Наступне списання {short_date(next_billing)}."
-    )
+def member_pool_resumed(pool: Pool, next_billing: datetime | None) -> str:
+    when = f" Наступне списання {short_date(next_billing)}." if next_billing else ""
+    return f"▶️ Збір <b>{esc(pool.title)}</b> знову активний.{when}"
 
 
 def member_pool_deleted(title: str) -> str:

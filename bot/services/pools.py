@@ -1,5 +1,6 @@
 """Бізнес-логіка зборів: створення, приєднання, перерахунок часток. Без aiogram."""
 
+import calendar
 import logging
 import secrets
 from collections.abc import Sequence
@@ -9,7 +10,7 @@ from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.db.models import Member, Pool, User
+from bot.db.models import Frequency, Member, Pool, User
 from bot.db.repositories import MemberRepository, PoolRepository
 from bot.services.errors import DomainError, ErrorCode
 from bot.services.shares import ShareInput, SharePlan, compute_shares
@@ -34,6 +35,9 @@ class NewPoolData:
     billing_day: int
     include_owner: bool
     payment_details: str
+    frequency: Frequency = Frequency.MONTHLY
+    billing_month: int | None = None  # для yearly / once
+    billing_year: int | None = None  # для once
 
 
 class JoinStatus(StrEnum):
@@ -104,11 +108,16 @@ class PoolService:
     async def create_pool(self, owner: User, data: NewPoolData) -> Pool:
         if data.total_amount_kop <= 0:
             raise DomainError(ErrorCode.INVALID_AMOUNT)
+        day = validate_billing_day(data.billing_day)
+        month, year = validate_schedule(data.frequency, day, data.billing_month, data.billing_year)
         pool = await self.pools.create(
             owner_id=owner.id,
             title=validate_title(data.title),
             total_amount_kop=data.total_amount_kop,
-            billing_day=validate_billing_day(data.billing_day),
+            billing_day=day,
+            frequency=data.frequency,
+            billing_month=month,
+            billing_year=year,
             include_owner=data.include_owner,
             payment_details=validate_payment_details(data.payment_details),
             invite_token=await self._new_invite_token(),
@@ -268,6 +277,17 @@ class PoolService:
         pool = await self.get_owned_pool(pool_id, owner)
         return await self.pools.update(pool, billing_day=validate_billing_day(day))
 
+    async def update_billing_date(
+        self, pool_id: int, owner: User, day: int, month: int, year: int | None = None
+    ) -> Pool:
+        """Нова дата списання для річного чи разового збору."""
+        pool = await self.get_owned_pool(pool_id, owner)
+        day = validate_billing_day(day)
+        month_v, year_v = validate_schedule(pool.frequency, day, month, year)
+        return await self.pools.update(
+            pool, billing_day=day, billing_month=month_v, billing_year=year_v
+        )
+
     async def update_details(self, pool_id: int, owner: User, details: str) -> Pool:
         pool = await self.get_owned_pool(pool_id, owner)
         return await self.pools.update(pool, payment_details=validate_payment_details(details))
@@ -386,3 +406,26 @@ def can_manage_payments(pool: Pool, user: User) -> bool:
     if pool.owner_id == user.id:
         return True
     return any(m.user_id == user.id and m.is_active and m.is_admin for m in pool.members)
+
+
+def validate_schedule(
+    frequency: Frequency, day: int, month: int | None, year: int | None
+) -> tuple[int | None, int | None]:
+    """Перевіряє узгодженість розкладу й повертає (billing_month, billing_year) для збереження.
+
+    * monthly — місяць і рік не потрібні;
+    * yearly — потрібен місяць; 29 лютого дозволено (у невисокосні роки — 28-ме);
+    * once — потрібні місяць і рік, дата має існувати.
+    """
+    if frequency is Frequency.MONTHLY:
+        return None, None
+    if month is None or not 1 <= month <= 12:
+        raise DomainError(ErrorCode.INVALID_DATE)
+    if frequency is Frequency.YEARLY:
+        max_day = 29 if month == 2 else calendar.monthrange(2001, month)[1]
+        if day > max_day:
+            raise DomainError(ErrorCode.INVALID_DATE)
+        return month, None
+    if year is None or day > calendar.monthrange(year, month)[1]:
+        raise DomainError(ErrorCode.INVALID_DATE)
+    return month, year

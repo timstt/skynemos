@@ -4,7 +4,9 @@ from aiogram.fsm.state import State, StatesGroup
 class CreatePool(StatesGroup):
     title = State()
     amount = State()
+    frequency = State()
     billing_day = State()
+    billing_date = State()  # дд.мм для річного чи разового збору
     include_owner = State()
     payment_details = State()
     confirm = State()
@@ -15,6 +17,7 @@ class EditPool(StatesGroup):
 
     amount = State()
     billing_day = State()
+    billing_date = State()
     details = State()
     member_share = State()
     member_weight = State()

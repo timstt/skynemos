@@ -13,6 +13,7 @@ async def _create_pool(h: Harness) -> Pool:
     await h.send(OWNER, "/new")
     await h.send(OWNER, "YouTube Family")
     await h.send(OWNER, "300")
+    await h.click(OWNER, NewPoolCB(action=NewPoolAction.FREQ_MONTHLY).pack())
     await h.send(OWNER, "5")
     await h.click(OWNER, NewPoolCB(action=NewPoolAction.OWNER_YES).pack())
     await h.send(OWNER, "https://send.monobank.ua/jar/abc")
@@ -26,7 +27,7 @@ async def test_full_create_and_join_flow(harness: Harness, engine: AsyncEngine) 
     pool = await _create_pool(harness)
 
     owner_texts = harness.api.texts_to(OWNER["id"])
-    assert "Крок 1/5" in owner_texts[0]
+    assert "Крок 1/6" in owner_texts[0]
     assert "Перевір, чи все правильно" in owner_texts[-2]
     link = f"https://t.me/{BOT_USERNAME}?start=join_{pool.invite_token}"
     assert link in owner_texts[-1]

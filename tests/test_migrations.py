@@ -67,8 +67,8 @@ def test_upgrade_existing_data_keeps_behaviour(tmp_path: Path) -> None:
     with sync_engine.connect() as conn:
         member = conn.execute(text("SELECT share_kop, weight, is_admin FROM members")).one()
         assert tuple(member) == (15000, 1, 0)
-        pool = conn.execute(text("SELECT owner_weight, digest_period FROM pools")).one()
-        assert tuple(pool) == (1, None)
+        pool = conn.execute(text("SELECT owner_weight, digest_period, frequency FROM pools")).one()
+        assert tuple(pool) == (1, None, "monthly")
         payment = conn.execute(text("SELECT status, snoozed_until FROM payments")).one()
         assert tuple(payment) == ("pending", None)
     sync_engine.dispose()

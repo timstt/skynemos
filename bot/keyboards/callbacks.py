@@ -8,6 +8,9 @@ class NewPoolAction(StrEnum):
     OWNER_NO = "owner_no"
     CONFIRM = "confirm"
     CANCEL = "cancel"
+    FREQ_MONTHLY = "monthly"
+    FREQ_YEARLY = "yearly"
+    FREQ_ONCE = "once"
 
 
 class NewPoolCB(CallbackData, prefix="new"):

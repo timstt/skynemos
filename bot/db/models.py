@@ -50,6 +50,14 @@ class PaymentStatus(enum.StrEnum):
     PAID = "paid"
 
 
+class Frequency(enum.StrEnum):
+    """Як часто збір виставляє рахунок."""
+
+    MONTHLY = "monthly"
+    YEARLY = "yearly"  # раз на рік: billing_month + billing_day
+    ONCE = "once"  # один раз: billing_year + billing_month + billing_day
+
+
 def utcnow() -> datetime:
     return datetime.now(UTC)
 
@@ -109,6 +117,13 @@ class Pool(Base):
         CheckConstraint("billing_day BETWEEN 1 AND 31", name="billing_day_range"),
         CheckConstraint("owner_share_kop >= 0", name="owner_share_non_negative"),
         CheckConstraint("owner_weight BETWEEN 1 AND 10", name="owner_weight_range"),
+        CheckConstraint(
+            "billing_month IS NULL OR billing_month BETWEEN 1 AND 12", name="billing_month_range"
+        ),
+        CheckConstraint(
+            "frequency = 'monthly' OR billing_month IS NOT NULL", name="month_required"
+        ),
+        CheckConstraint("frequency != 'once' OR billing_year IS NOT NULL", name="year_required"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -131,6 +146,21 @@ class Pool(Base):
     # З якого моменту збір активний (створення або останнє зняття з паузи).
     # Платежі створюються лише за цикли, чий момент списання не раніше цієї дати.
     active_since: Mapped[datetime] = _now_column()
+    frequency: Mapped[Frequency] = mapped_column(
+        Enum(
+            Frequency,
+            name="pool_frequency",
+            native_enum=False,
+            create_constraint=True,
+            length=16,
+            values_callable=lambda e: [m.value for m in e],
+            validate_strings=True,
+        ),
+        default=Frequency.MONTHLY,
+        server_default=Frequency.MONTHLY.value,
+    )
+    billing_month: Mapped[int | None] = mapped_column(SmallInteger)  # для yearly / once
+    billing_year: Mapped[int | None] = mapped_column(SmallInteger)  # для once
     # Скільки «часток» бере власник при розподілі за вагами (якщо include_owner)
     owner_weight: Mapped[int] = mapped_column(SmallInteger, default=1, server_default="1")
     # Період, за який власнику вже надіслано підсумок на 3-й день (захист від повторів)

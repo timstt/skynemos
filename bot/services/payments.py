@@ -22,11 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.db.models import Member, Payment, PaymentStatus, Pool, User
 from bot.db.repositories import MemberRepository, PaymentRepository, PoolRepository
 from bot.services.billing import (
-    add_months,
+    Schedule,
     billing_moment,
-    due_periods,
     ensure_aware,
-    latest_due_period,
     reminders_due,
     should_remind,
 )
@@ -41,6 +39,10 @@ ALLOWED_TRANSITIONS: dict[PaymentStatus, frozenset[PaymentStatus]] = {
     PaymentStatus.CLAIMED: frozenset({PaymentStatus.PAID, PaymentStatus.PENDING}),
     PaymentStatus.PAID: frozenset(),
 }
+
+
+def pool_schedule(pool: Pool) -> Schedule:
+    return Schedule(pool.billing_day, pool.frequency, pool.billing_month, pool.billing_year)
 
 
 class PaidVia(StrEnum):
@@ -59,7 +61,7 @@ class PoolStatus:
     period: date | None  # None — перше списання ще не настало
     payments: Sequence[Payment]
     not_billed_yet: Sequence[Member]  # приєдналися після списання: платять з наступного
-    next_billing: datetime
+    next_billing: datetime | None  # None — разовий збір, списань більше не буде
 
     @property
     def paid_kop(self) -> int:
@@ -134,8 +136,8 @@ class PaymentService:
     async def create_due_payments_for_pool(self, pool: Pool, now: datetime) -> list[Payment]:
         if pool.is_paused:
             return []
-        periods = due_periods(
-            now, pool.billing_day, self.tz, self.billing_hour, not_before=pool.active_since
+        periods = pool_schedule(pool).due_periods(
+            now, self.tz, self.billing_hour, not_before=pool.active_since
         )
         if not periods:
             return []
@@ -292,8 +294,8 @@ class PaymentService:
         """Збори, власнику яких час надіслати підсумок за останній період (3-й день)."""
         result: list[PoolStatus] = []
         for pool in await self.pools.list_active():
-            period = latest_due_period(now, pool.billing_day, self.tz, self.billing_hour)
-            if pool.digest_period == period:
+            period = pool_schedule(pool).latest_due_period(now, self.tz, self.billing_hour)
+            if period is None or pool.digest_period == period:
                 continue
             moment = self.billing_moment(pool, period)
             if moment < ensure_aware(pool.active_since):
@@ -345,9 +347,11 @@ class PaymentService:
         return await self.payments.list_for_member(member.id, limit)
 
     async def pool_status(self, pool: Pool, now: datetime) -> PoolStatus:
-        period = latest_due_period(now, pool.billing_day, self.tz, self.billing_hour)
-        next_billing = self.billing_moment(pool, add_months(period, 1))
-        if self.billing_moment(pool, period) < ensure_aware(pool.active_since):
+        schedule = pool_schedule(pool)
+        period = schedule.latest_due_period(now, self.tz, self.billing_hour)
+        upcoming = schedule.upcoming_period(now, self.tz, self.billing_hour)
+        next_billing = self.billing_moment(pool, upcoming) if upcoming else None
+        if period is None or self.billing_moment(pool, period) < ensure_aware(pool.active_since):
             # Збір створено (або знято з паузи) після останнього списання
             return PoolStatus(pool, None, [], [], next_billing)
 

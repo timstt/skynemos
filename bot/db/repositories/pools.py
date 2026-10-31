@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from bot.db.models import Member, Pool
+from bot.db.models import Frequency, Member, Pool
 
 
 class PoolRepository:
@@ -22,8 +22,14 @@ class PoolRepository:
         include_owner: bool,
         payment_details: str,
         invite_token: str,
+        frequency: Frequency = Frequency.MONTHLY,
+        billing_month: int | None = None,
+        billing_year: int | None = None,
     ) -> Pool:
         pool = Pool(
+            frequency=frequency,
+            billing_month=billing_month,
+            billing_year=billing_year,
             owner_id=owner_id,
             title=title,
             total_amount_kop=total_amount_kop,

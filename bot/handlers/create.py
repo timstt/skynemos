@@ -1,5 +1,8 @@
 """/new — покрокове створення збору (FSM)."""
 
+from typing import Any
+from zoneinfo import ZoneInfo
+
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -8,13 +11,15 @@ from aiogram.utils.deep_linking import create_start_link
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot import keyboards, texts
-from bot.db.models import User
+from bot.db.models import Frequency, User, utcnow
 from bot.handlers.common import show
 from bot.keyboards.callbacks import NewPoolAction, NewPoolCB
+from bot.services.billing import next_occurrence_year
 from bot.services.errors import DomainError
 from bot.services.money import parse_amount
 from bot.services.pools import NewPoolData, PoolService
 from bot.services.validation import (
+    parse_day_month,
     validate_billing_day,
     validate_payment_details,
     validate_title,
@@ -22,6 +27,20 @@ from bot.services.validation import (
 from bot.states import CreatePool
 
 router = Router(name="create")
+
+
+def _pool_data(data: dict[str, Any]) -> NewPoolData:
+    """Дані діалогу → NewPoolData (частота зберігається в стані рядком)."""
+    return NewPoolData(
+        title=data["title"],
+        total_amount_kop=data["total_amount_kop"],
+        billing_day=data["billing_day"],
+        include_owner=data["include_owner"],
+        payment_details=data["payment_details"],
+        frequency=Frequency(data.get("frequency", Frequency.MONTHLY.value)),
+        billing_month=data.get("billing_month"),
+        billing_year=data.get("billing_year"),
+    )
 
 
 @router.message(Command("new"))
@@ -46,7 +65,7 @@ async def command_in_dialog(message: Message) -> None:
     await message.answer(texts.LOOKS_LIKE_COMMAND)
 
 
-@router.message(StateFilter(CreatePool.include_owner, CreatePool.confirm))
+@router.message(StateFilter(CreatePool.frequency, CreatePool.include_owner, CreatePool.confirm))
 async def expect_button(message: Message) -> None:
     await message.answer(texts.EXPECT_BUTTON)
 
@@ -76,8 +95,49 @@ async def got_amount(message: Message, state: FSMContext) -> None:
         await message.answer(texts.error_text(exc))
         return
     await state.update_data(total_amount_kop=amount)
-    await state.set_state(CreatePool.billing_day)
-    await message.answer(texts.ASK_BILLING_DAY)
+    await state.set_state(CreatePool.frequency)
+    await message.answer(texts.ASK_FREQUENCY, reply_markup=keyboards.frequency_kb())
+
+
+_FREQUENCIES = {
+    NewPoolAction.FREQ_MONTHLY: Frequency.MONTHLY,
+    NewPoolAction.FREQ_YEARLY: Frequency.YEARLY,
+    NewPoolAction.FREQ_ONCE: Frequency.ONCE,
+}
+
+
+@router.callback_query(CreatePool.frequency, NewPoolCB.filter(F.action.in_(set(_FREQUENCIES))))
+async def got_frequency(
+    callback: CallbackQuery, callback_data: NewPoolCB, state: FSMContext
+) -> None:
+    frequency = _FREQUENCIES[callback_data.action]
+    await state.update_data(frequency=frequency.value)
+    await show(callback, f"{texts.ASK_FREQUENCY}\n\n👉 {texts.frequency_label(frequency)}")
+    await callback.answer()
+    if frequency is Frequency.MONTHLY:
+        await state.set_state(CreatePool.billing_day)
+        prompt = texts.ASK_BILLING_DAY
+    else:
+        await state.set_state(CreatePool.billing_date)
+        prompt = texts.ask_billing_date(frequency)
+    if isinstance(callback.message, Message):
+        await callback.message.answer(prompt)
+
+
+@router.message(CreatePool.billing_date, F.text)
+async def got_billing_date(message: Message, state: FSMContext, tz: ZoneInfo) -> None:
+    try:
+        day, month = parse_day_month(message.text or "")
+    except DomainError as exc:
+        await message.answer(texts.error_text(exc))
+        return
+    frequency = Frequency((await state.get_data())["frequency"])
+    year = None
+    if frequency is Frequency.ONCE:
+        year = next_occurrence_year(day, month, utcnow().astimezone(tz).date())
+    await state.update_data(billing_day=day, billing_month=month, billing_year=year)
+    await state.set_state(CreatePool.include_owner)
+    await message.answer(texts.ASK_INCLUDE_OWNER, reply_markup=keyboards.include_owner_kb())
 
 
 @router.message(CreatePool.billing_day, F.text)
@@ -118,7 +178,7 @@ async def got_details(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(payment_details=details)
     await state.set_state(CreatePool.confirm)
-    data = NewPoolData(**await state.get_data())
+    data = _pool_data(await state.get_data())
     await message.answer(texts.confirm_pool(data), reply_markup=keyboards.confirm_create_kb())
 
 
@@ -130,7 +190,7 @@ async def confirm_create(
     user: User,
     bot: Bot,
 ) -> None:
-    data = NewPoolData(**await state.get_data())
+    data = _pool_data(await state.get_data())
     try:
         pool = await PoolService(session).create_pool(user, data)
     except DomainError as exc:

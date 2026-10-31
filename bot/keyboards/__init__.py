@@ -29,6 +29,17 @@ def include_owner_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+def frequency_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text=texts.BTN_FREQ_MONTHLY, callback_data=NewPoolCB(action=NewPoolAction.FREQ_MONTHLY)
+    )
+    kb.button(text=texts.BTN_FREQ_YEARLY, callback_data=NewPoolCB(action=NewPoolAction.FREQ_YEARLY))
+    kb.button(text=texts.BTN_FREQ_ONCE, callback_data=NewPoolCB(action=NewPoolAction.FREQ_ONCE))
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def confirm_create_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text=texts.BTN_CREATE, callback_data=NewPoolCB(action=NewPoolAction.CONFIRM))

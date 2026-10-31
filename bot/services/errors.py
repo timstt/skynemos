@@ -7,6 +7,7 @@ class ErrorCode(StrEnum):
     INVALID_AMOUNT = "invalid_amount"
     INVALID_BILLING_DAY = "invalid_billing_day"
     INVALID_DETAILS = "invalid_details"
+    INVALID_DATE = "invalid_date"
     # Збори та учасники
     POOL_NOT_FOUND = "pool_not_found"
     NOT_POOL_OWNER = "not_pool_owner"

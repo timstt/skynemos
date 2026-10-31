@@ -8,8 +8,11 @@
 """
 
 import calendar
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
+
+from bot.db.models import Frequency
 
 REMINDER_OFFSETS_DAYS: tuple[int, ...] = (2, 5)
 MAX_REMINDERS_PER_PERIOD = 3
@@ -106,3 +109,94 @@ def should_remind(
         if last_local == ensure_aware(now).astimezone(tz).date():
             return False
     return True
+
+
+# --- розклад з частотою (щомісяця / щороку / разово) ---------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Schedule:
+    """Розклад списань збору.
+
+    * monthly — щомісяця `billing_day`;
+    * yearly — щороку `billing_day` числа місяця `billing_month`;
+    * once — один раз: `billing_day`.`billing_month`.`billing_year`.
+    Період — завжди перше число місяця списання.
+    """
+
+    billing_day: int
+    frequency: Frequency = Frequency.MONTHLY
+    billing_month: int | None = None
+    billing_year: int | None = None
+
+    @property
+    def step_months(self) -> int:
+        return 12 if self.frequency is Frequency.YEARLY else 1
+
+    def moment(self, period: date, tz: ZoneInfo, hour: int) -> datetime:
+        return billing_moment(period, self.billing_day, tz, hour)
+
+    def latest_due_period(self, now: datetime, tz: ZoneInfo, hour: int) -> date | None:
+        """Останній період, чий момент списання вже настав (None — ще жодного)."""
+        now = ensure_aware(now)
+        if self.frequency is Frequency.MONTHLY:
+            return latest_due_period(now, self.billing_day, tz, hour)
+        assert self.billing_month is not None
+        if self.frequency is Frequency.ONCE:
+            assert self.billing_year is not None
+            period = date(self.billing_year, self.billing_month, 1)
+            return period if now >= self.moment(period, tz, hour) else None
+        local_year = now.astimezone(tz).year
+        period = date(local_year, self.billing_month, 1)
+        if now < self.moment(period, tz, hour):
+            period = date(local_year - 1, self.billing_month, 1)
+        return period
+
+    def next_period(self, period: date) -> date | None:
+        """Наступний період після `period` (None для разового збору)."""
+        if self.frequency is Frequency.ONCE:
+            return None
+        return add_months(period, self.step_months)
+
+    def upcoming_period(self, now: datetime, tz: ZoneInfo, hour: int) -> date | None:
+        """Найближчий період, що ще не настав (для «наступне списання …»)."""
+        latest = self.latest_due_period(now, tz, hour)
+        if latest is not None:
+            return self.next_period(latest)
+        if self.frequency is Frequency.ONCE:
+            assert self.billing_month is not None and self.billing_year is not None
+            return date(self.billing_year, self.billing_month, 1)
+        return None  # pragma: no cover - monthly/yearly завжди мають latest
+
+    def due_periods(
+        self,
+        now: datetime,
+        tz: ZoneInfo,
+        hour: int,
+        *,
+        not_before: datetime,
+        limit: int = MAX_CATCHUP_PERIODS,
+    ) -> list[date]:
+        """Періоди (за зростанням), чий момент списання в [not_before; now], не більше `limit`."""
+        not_before = ensure_aware(not_before)
+        latest = self.latest_due_period(now, tz, hour)
+        periods: list[date] = []
+        period = latest
+        while (
+            period is not None
+            and len(periods) < limit
+            and self.moment(period, tz, hour) >= not_before
+        ):
+            periods.append(period)
+            period = (
+                None if self.frequency is Frequency.ONCE else add_months(period, -self.step_months)
+            )
+        return sorted(periods)
+
+
+def next_occurrence_year(day: int, month: int, today: date) -> int:
+    """Рік найближчої дати `day`.`month`, строго пізнішої за `today` (для разового збору)."""
+    year = today.year
+    if billing_date(date(year, month, 1), day) <= today:
+        year += 1
+    return year
