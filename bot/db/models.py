@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import enum
-from datetime import date, datetime
+from datetime import UTC, date, datetime
+from typing import Any, ClassVar
 
 from sqlalchemy import (
     BigInteger,
@@ -37,6 +38,8 @@ INVITE_TOKEN_LENGTH = 32
 
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
+    # Після INSERT одразу підтягувати серверні дефолти: в async лінива догрузка неможлива
+    __mapper_args__: ClassVar[dict[str, Any]] = {"eager_defaults": True}
 
 
 class PaymentStatus(enum.StrEnum):
@@ -45,8 +48,15 @@ class PaymentStatus(enum.StrEnum):
     PAID = "paid"
 
 
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 def _now_column() -> Mapped[datetime]:
-    return mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Python-дефолт: значення відоме одразу й однакове для Postgres і SQLite (тести)
+    return mapped_column(
+        DateTime(timezone=True), default=utcnow, server_default=func.now(), nullable=False
+    )
 
 
 class User(Base):
@@ -94,6 +104,9 @@ class Pool(Base):
     )
     is_paused: Mapped[bool] = mapped_column(default=False, server_default=false())
     created_at: Mapped[datetime] = _now_column()
+    # З якого моменту збір активний (створення або останнє зняття з паузи).
+    # Платежі створюються лише за цикли, чий момент списання не раніше цієї дати.
+    active_since: Mapped[datetime] = _now_column()
 
     owner: Mapped[User] = relationship(back_populates="owned_pools")
     members: Mapped[list[Member]] = relationship(

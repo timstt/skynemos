@@ -13,6 +13,9 @@ class ErrorCode(StrEnum):
     OWNER_CANNOT_JOIN = "owner_cannot_join"
     POOL_FULL = "pool_full"
     NOT_A_MEMBER = "not_a_member"
+    # Платежі
+    PAYMENT_NOT_FOUND = "payment_not_found"
+    INVALID_TRANSITION = "invalid_transition"
 
 
 class DomainError(Exception):

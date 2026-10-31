@@ -84,6 +84,8 @@ ERRORS: dict[ErrorCode, str] = {
     ),
     ErrorCode.POOL_FULL: f"У зборі вже максимум учасників ({MAX_MEMBERS}) 😔",
     ErrorCode.NOT_A_MEMBER: "Ти не береш участі в цьому зборі.",
+    ErrorCode.PAYMENT_NOT_FOUND: "Цей платіж не знайдено. Можливо, збір видалено.",
+    ErrorCode.INVALID_TRANSITION: "Статус цього платежу вже змінився. Онови список.",
 }
 
 
