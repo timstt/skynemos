@@ -49,7 +49,8 @@ async def test_card_number_is_copyable_in_request(
 
     [request] = api.sent_to(201)
     assert "<code>4441 1111 2222 3333</code>" in request.text
-    assert len(request.reply_markup.inline_keyboard) == 1  # type: ignore[union-attr]
+    # Без посилання в реквізитах: лише «Я скинув» і «Нагадай завтра»
+    assert len(request.reply_markup.inline_keyboard) == 2  # type: ignore[union-attr]
 
 
 async def test_debt_block_lists_only_earlier_periods(

@@ -17,3 +17,5 @@ class EditPool(StatesGroup):
     billing_day = State()
     details = State()
     member_share = State()
+    member_weight = State()
+    owner_weight = State()

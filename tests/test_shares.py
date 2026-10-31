@@ -85,3 +85,48 @@ def test_sum_always_equals_total(total: int, include_owner: bool, n: int) -> Non
 def test_rejects_non_positive_total() -> None:
     with pytest.raises(ValueError):
         compute_shares(0, True, [])
+
+
+# --- ваги -------------------------------------------------------------------------
+
+
+def test_weights_split_proportionally() -> None:
+    # 400 грн: родина (вага 2) + 1 учасник + власник = 4 частки по 100 грн
+    plan = compute_shares(40_000, True, [ShareInput(1, weight=2), ShareInput(2)])
+    assert plan.member_shares == {1: 20_000, 2: 10_000}
+    assert plan.owner_share_kop == 10_000
+
+
+def test_owner_weight() -> None:
+    plan = compute_shares(30_000, True, [ShareInput(1)], owner_weight=2)
+    assert (plan.owner_share_kop, plan.member_shares) == (20_000, {1: 10_000})
+
+
+def test_weighted_remainder_follows_spec_rule() -> None:
+    # 100 грн на ваги 2:1 без власника → 6666 + 3333 = 9999, копійка першому
+    plan = compute_shares(10_000, False, [ShareInput(1, weight=2), ShareInput(2)])
+    assert plan.member_shares == {1: 6_667, 2: 3_333}
+
+
+def test_custom_share_overrides_weight() -> None:
+    plan = compute_shares(30_000, True, [ShareInput(1, 5_000, weight=5), ShareInput(2)])
+    assert plan.member_shares[1] == 5_000
+    assert plan.member_shares[2] == 12_500 and plan.owner_share_kop == 12_500
+
+
+def test_invalid_weight_rejected() -> None:
+    with pytest.raises(ValueError):
+        compute_shares(100, True, [ShareInput(1, weight=0)])
+
+
+@pytest.mark.parametrize("total", [1, 99, 10_001, 9_999_999])
+@pytest.mark.parametrize("include_owner", [True, False])
+@pytest.mark.parametrize("weights", [(1,), (2, 1), (3, 1, 7), (10,) * 10, (1, 2, 3, 4, 5)])
+@pytest.mark.parametrize("owner_weight", [1, 3])
+def test_weighted_sum_always_equals_total(
+    total: int, include_owner: bool, weights: tuple[int, ...], owner_weight: int
+) -> None:
+    members = [ShareInput(i, weight=w) for i, w in enumerate(weights, start=1)]
+    plan = compute_shares(total, include_owner, members, owner_weight=owner_weight)
+    assert plan.total_kop == total
+    assert all(v >= 0 for v in plan.member_shares.values())

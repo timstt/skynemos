@@ -18,7 +18,7 @@ from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from bot import keyboards, texts
-from bot.db.models import Payment, utcnow
+from bot.db.models import Payment, PaymentStatus, utcnow
 from bot.notifier import Delivery, notify
 from bot.services.payments import PaymentService
 
@@ -30,6 +30,7 @@ class JobReport:
     created: int = 0
     requests_sent: int = 0
     reminders_sent: int = 0
+    digests_sent: int = 0
     blocked: list[int] = field(default_factory=list)  # id учасників, що заблокували бота
 
 
@@ -64,13 +65,15 @@ class BillingJob:
                 await self._create_payments(now, report)
                 await self._send_requests(now, report)
                 await self._send_reminders(now, report)
+                await self._send_digests(now, report)
             except Exception:
                 logger.exception("Billing job failed")
             logger.info(
-                "Billing job: created=%s requests=%s reminders=%s blocked=%s",
+                "Billing job: created=%s requests=%s reminders=%s digests=%s blocked=%s",
                 report.created,
                 report.requests_sent,
                 report.reminders_sent,
+                report.digests_sent,
                 len(report.blocked),
             )
             return report
@@ -106,21 +109,35 @@ class BillingJob:
     async def _send_reminders(self, now: datetime, report: JobReport) -> None:
         async with self.session_factory() as session:
             service = self._service(session)
-            for payment, moment in await service.payments_to_remind(now):
+            for reminder in await service.payments_to_remind(now):
+                payment = reminder.payment
+                debt = await service.member_debt(payment.member_id, before=payment.period)
                 delivery = await notify(
                     self.bot,
                     session,
                     payment.member.user,
-                    texts.payment_reminder(
-                        payment, await service.member_debt(payment.member_id, before=payment.period)
-                    ),
+                    texts.payment_reminder(payment, debt, from_snooze=reminder.from_snooze),
                     keyboards.payment_request_kb(payment),
                 )
                 if delivery is Delivery.SENT:
-                    await service.record_reminder(payment, moment, now)
+                    await service.record_reminder(reminder, now)
                     report.reminders_sent += 1
                 elif delivery is Delivery.BLOCKED:
                     await self._warn_owner(session, payment, report)
+                await session.commit()
+                await asyncio.sleep(self.send_delay)
+
+    async def _send_digests(self, now: datetime, report: JobReport) -> None:
+        """Підсумок власнику на 3-й день: хто ще не скинув. Один раз за період."""
+        async with self.session_factory() as session:
+            service = self._service(session)
+            for status in await service.digests_due(now):
+                unpaid = [p for p in status.payments if p.status is not PaymentStatus.PAID]
+                if unpaid and status.period is not None:
+                    await notify(self.bot, session, status.pool.owner, texts.owner_digest(status))
+                    report.digests_sent += 1
+                if status.period is not None:
+                    await service.mark_digest_sent(status.pool, status.period)
                 await session.commit()
                 await asyncio.sleep(self.send_delay)
 

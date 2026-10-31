@@ -22,6 +22,7 @@ from bot.services.validation import (
 logger = logging.getLogger(__name__)
 
 MAX_MEMBERS = 10
+MAX_WEIGHT = 10
 _TOKEN_BYTES = 12  # → 16 символів base64url, вміщується в deep link (≤ 64)
 _TOKEN_ATTEMPTS = 5
 
@@ -148,6 +149,7 @@ class PoolService:
             pool.total_amount_kop,
             pool.include_owner,
             [*self._share_inputs(active), ShareInput(member_id=0)],
+            owner_weight=pool.owner_weight,
         )
         return JoinPreview(pool, len(active), plan.member_shares[0], already_member=False)
 
@@ -185,7 +187,12 @@ class PoolService:
         Уже створені платежі не змінюються: нові частки діють з наступного циклу.
         """
         active = list(await self.members.list_active(pool.id))
-        plan = compute_shares(pool.total_amount_kop, pool.include_owner, self._share_inputs(active))
+        plan = compute_shares(
+            pool.total_amount_kop,
+            pool.include_owner,
+            self._share_inputs(active),
+            owner_weight=pool.owner_weight,
+        )
         for member in active:
             custom = member.share_is_custom and not plan.custom_reset
             await self.members.set_share(member, plan.member_shares[member.id], custom=custom)
@@ -194,7 +201,10 @@ class PoolService:
 
     @staticmethod
     def _share_inputs(members: Sequence[Member]) -> list[ShareInput]:
-        return [ShareInput(m.id, m.share_kop if m.share_is_custom else None) for m in members]
+        return [
+            ShareInput(m.id, m.share_kop if m.share_is_custom else None, weight=m.weight)
+            for m in members
+        ]
 
     # --- перегляд ----------------------------------------------------------
 
@@ -210,6 +220,15 @@ class PoolService:
         if pool is None:
             raise DomainError(ErrorCode.POOL_NOT_FOUND)
         if pool.owner_id != user.id:
+            raise DomainError(ErrorCode.NOT_POOL_OWNER)
+        return pool
+
+    async def get_managed_pool(self, pool_id: int, user: User) -> Pool:
+        """Збір, якщо `user` його власник або співвласник (для підтвердження оплат)."""
+        pool = await self.pools.get_with_members(pool_id)
+        if pool is None:
+            raise DomainError(ErrorCode.POOL_NOT_FOUND)
+        if not can_manage_payments(pool, user):
             raise DomainError(ErrorCode.NOT_POOL_OWNER)
         return pool
 
@@ -301,6 +320,34 @@ class PoolService:
         logger.info("Pool %s deleted by owner %s", pool_id, owner.id)
         return deleted
 
+    async def set_member_weight(
+        self, pool_id: int, owner: User, member_id: int, weight: int
+    ) -> ShareUpdate:
+        if not 1 <= weight <= MAX_WEIGHT:
+            raise DomainError(ErrorCode.INVALID_WEIGHT)
+        pool = await self.get_owned_pool(pool_id, owner)
+        member = await self.get_active_member(pool, member_id)
+        before = await self._shares_snapshot(pool)
+        member.weight = weight
+        await self.session.flush()
+        return await self._recalculate_with_changes(pool, before)
+
+    async def set_owner_weight(self, pool_id: int, owner: User, weight: int) -> ShareUpdate:
+        if not 1 <= weight <= MAX_WEIGHT:
+            raise DomainError(ErrorCode.INVALID_WEIGHT)
+        pool = await self.get_owned_pool(pool_id, owner)
+        await self.pools.update(pool, owner_weight=weight)
+        return await self._recalculate_with_changes(pool)
+
+    async def set_admin(self, pool_id: int, owner: User, member_id: int, admin: bool) -> Member:
+        """Призначити або зняти співвласника (лише власник)."""
+        pool = await self.get_owned_pool(pool_id, owner)
+        member = await self.get_active_member(pool, member_id)
+        member.is_admin = admin
+        await self.session.flush()
+        logger.info("Member %s admin=%s in pool %s", member.id, admin, pool.id)
+        return member
+
     # --- дії учасника --------------------------------------------------------
 
     async def leave_pool(self, pool_id: int, user: User) -> MemberRemoval:
@@ -329,3 +376,13 @@ class PoolService:
             if m.id in before and before[m.id] != m.share_kop
         ]
         return ShareUpdate(pool, changes, plan.custom_reset)
+
+
+def can_manage_payments(pool: Pool, user: User) -> bool:
+    """Власник або активний співвласник: може підтверджувати оплати й бачити статус.
+
+    `pool.members` має бути завантажений.
+    """
+    if pool.owner_id == user.id:
+        return True
+    return any(m.user_id == user.id and m.is_active and m.is_admin for m in pool.members)

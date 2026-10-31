@@ -14,6 +14,7 @@ from bot.keyboards.callbacks import PaymentAction, PaymentCB
 from bot.notifier import notify
 from bot.services.errors import DomainError
 from bot.services.payments import PaymentService, TransitionResult
+from bot.services.pools import PoolService
 
 router = Router(name="payments")
 
@@ -51,12 +52,42 @@ async def claim(
 
     await show(callback, texts.payment_claimed_member(payment))
     await callback.answer("Передав власнику на перевірку 👌")
-    await notify(
-        bot,
-        session,
-        payment.member.pool.owner,
-        texts.owner_claim(payment),
-        keyboards.owner_claim_kb(payment.id),
+    # Запит на підтвердження — власнику й співвласникам (крім самого учасника)
+    pool = payment.member.pool
+    admins = [
+        m.user
+        for m in await PoolService(session).list_active_members(pool)
+        if m.is_admin and m.user_id != user.id
+    ]
+    for recipient in [pool.owner, *admins]:
+        await notify(
+            bot,
+            session,
+            recipient,
+            texts.owner_claim(payment),
+            keyboards.owner_claim_kb(payment.id),
+        )
+
+
+@router.callback_query(PaymentCB.filter(F.action == PaymentAction.SNOOZE))
+async def snooze(
+    callback: CallbackQuery,
+    callback_data: PaymentCB,
+    session: AsyncSession,
+    user: User,
+    tz: ZoneInfo,
+    billing_hour: int,
+) -> None:
+    """Учасник: «Нагадай завтра»."""
+    service = PaymentService(session, tz, billing_hour)
+    try:
+        payment = await service.snooze(callback_data.payment_id, user, utcnow())
+    except DomainError as exc:
+        await callback.answer(texts.error_text(exc), show_alert=True)
+        return
+    assert payment.snoozed_until is not None
+    await callback.answer(
+        texts.snoozed_alert(payment.snoozed_until.astimezone(tz)), show_alert=True
     )
 
 

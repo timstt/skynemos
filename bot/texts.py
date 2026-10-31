@@ -70,6 +70,7 @@ BTN_BACK_TO_LIST = "⬅️ До списку зборів"
 BTN_BACK = "⬅️ Назад"
 BTN_OPEN_POOL = "Відкрити збір"
 BTN_CLAIM = "Я скинув ✅"
+BTN_SNOOZE = "⏰ Нагадай завтра"
 BTN_OPEN_JAR = "💳 Відкрити банку"
 BTN_OPEN_PAY_LINK = "🔗 Відкрити посилання для оплати"
 BTN_CONFIRM = "✅ Підтвердити"
@@ -92,6 +93,18 @@ BTN_STAY = "Ні, лишаюся"
 BTN_SET_SHARE = "✏️ Змінити частку"
 BTN_SHARE_AUTO = "🔄 Повернути автоматичну частку"
 BTN_REMOVE_MEMBER = "🚫 Видалити зі збору"
+BTN_MAKE_ADMIN = "👮 Зробити співвласником"
+BTN_REVOKE_ADMIN = "🙅 Забрати права співвласника"
+BTN_UNPAID_ADMIN = "✅ Підтвердити оплати"
+
+
+def btn_member_weight(weight: int) -> str:
+    return f"⚖️ Кількість часток: {weight}"
+
+
+def btn_owner_weight(weight: int) -> str:
+    return f"👑 Мої частки: {weight}"
+
 
 # --- помилки -----------------------------------------------------------------
 
@@ -117,6 +130,7 @@ ERRORS: dict[ErrorCode, str] = {
     ErrorCode.INVALID_SHARE: (
         "Так не вийде: ручні частки разом не можуть перевищувати загальну суму збору."
     ),
+    ErrorCode.INVALID_WEIGHT: "Кількість часток — ціле число від 1 до 10.",
     ErrorCode.PAYMENT_NOT_FOUND: "Цей платіж не знайдено. Можливо, збір видалено.",
     ErrorCode.INVALID_TRANSITION: "Статус цього платежу вже змінився. Онови список.",
 }
@@ -277,11 +291,10 @@ def owner_pool_card(pool: Pool, members: Sequence[Member]) -> str:
     lines.append(f"\n<b>Учасники ({len(members)}/{MAX_MEMBERS}):</b>")
     if pool.include_owner or pool.owner_share_kop:
         label = "Ти" if pool.include_owner else "Ти (невкрита частина)"
-        lines.append(f"👑 {label} — {format_money(pool.owner_share_kop)}")
+        weight = f" ×{pool.owner_weight}" if pool.include_owner and pool.owner_weight > 1 else ""
+        lines.append(f"👑 {label}{weight} — {format_money(pool.owner_share_kop)}")
     for member in members:
-        mark = "" if member.user.is_reachable else " ⚠️ недоступний"
-        custom = " ✏️" if member.share_is_custom else ""
-        lines.append(f"• {mention(member.user)} — {format_money(member.share_kop)}{custom}{mark}")
+        lines.append(f"• {_member_line(member)}")
     if not members:
         lines.append("<i>Поки нікого. Надішли друзям посилання-запрошення.</i>")
     return "\n".join(lines)
@@ -361,11 +374,35 @@ def payment_request(payment: Payment, earlier: Sequence[Payment] = ()) -> str:
     )
 
 
-def payment_reminder(payment: Payment, earlier: Sequence[Payment] = ()) -> str:
+def payment_reminder(
+    payment: Payment, earlier: Sequence[Payment] = (), *, from_snooze: bool = False
+) -> str:
+    intro = (
+        "⏰ Як ти просив(-ла), нагадую про оплату."
+        if from_snooze
+        else "Нагадую 🙂 Схоже, за цей місяць ще не скинуто."
+    )
     return (
-        "Нагадую 🙂 Схоже, за цей місяць ще не скинуто.\n\n"
-        f"{_payment_body(payment)}{debt_block(payment, earlier)}\n\n"
+        f"{intro}\n\n{_payment_body(payment)}{debt_block(payment, earlier)}\n\n"
         "Якщо вже переказав(-ла), натисни кнопку, щоб власник перевірив."
+    )
+
+
+def snoozed_alert(until: datetime) -> str:
+    return f"⏰ Добре, нагадаю {short_date(until)} о {until:%H:%M}."
+
+
+def owner_digest(status: PoolStatus) -> str:
+    """Підсумок власнику на 3-й день: хто ще не скинув."""
+    assert status.period is not None
+    paid = sum(1 for p in status.payments if p.status is PaymentStatus.PAID)
+    unpaid = [p for p in status.payments if p.status is not PaymentStatus.PAID]
+    lines = [_status_line(p) for p in unpaid]
+    return (
+        f"📊 <b>{esc(status.pool.title)}</b>, {period_name(status.period)}: "
+        f"скинули {paid} з {len(status.payments)}.\n\n"
+        + "\n".join(lines)
+        + f"\n\nЗібрано: {format_money(status.paid_kop)} з {format_money(status.expected_kop)}"
     )
 
 
@@ -518,22 +555,65 @@ def ask_member_share(pool: Pool, member: Member) -> str:
     )
 
 
+def _member_line(member: Member) -> str:
+    """Рядок учасника в картці збору: ім'я, частка й позначки."""
+    marks = ""
+    if member.weight > 1 and not member.share_is_custom:
+        marks += f" ×{member.weight}"
+    if member.share_is_custom:
+        marks += " ✏️"
+    if member.is_admin:
+        marks += " 👮"
+    if not member.user.is_reachable:
+        marks += " ⚠️ недоступний"
+    return f"{mention(member.user)} — {format_money(member.share_kop)}{marks}"
+
+
 def members_list(pool: Pool, members: Sequence[Member]) -> str:
     if not members:
         return f"У зборі <b>{esc(pool.title)}</b> поки немає учасників."
     return (
         f"<b>Учасники {esc(pool.title)}</b>\n"
-        "✏️ — частка задана вручну. Обери учасника, щоб змінити частку або видалити:"
+        "✏️ — частка вручну, ×2 — дві частки, 👮 — співвласник.\n"
+        "Обери учасника, щоб змінити частку, кількість часток чи права:"
     )
 
 
 def member_card(member: Member) -> str:
     custom = " (задана вручну ✏️)" if member.share_is_custom else " (автоматично)"
     reach = "" if member.user.is_reachable else "\n⚠️ Бот заблоковано: повідомлення не доходять."
+    admin = "\n👮 Співвласник: може підтверджувати оплати" if member.is_admin else ""
     return (
         f"🙋 <b>{mention(member.user)}</b>\n"
-        f"🧮 Частка: {format_money(member.share_kop)}{custom}{reach}"
+        f"🧮 Частка: {format_money(member.share_kop)}{custom}\n"
+        f"⚖️ Кількість часток: {member.weight}{admin}{reach}"
     )
+
+
+def ask_member_weight(member: Member) -> str:
+    return (
+        f"Скільки часток бере <b>{mention(member.user)}</b>? Зараз: {member.weight}.\n"
+        "Наприклад, 2 — якщо платить за двох (родина). Число від 1 до 10.\n"
+        f"<i>{NEXT_CYCLE_NOTE}</i>{EDIT_HINT}"
+    )
+
+
+def ask_owner_weight(pool: Pool) -> str:
+    return (
+        f"Скільки часток береш ти? Зараз: {pool.owner_weight}. Число від 1 до 10.\n"
+        f"<i>{NEXT_CYCLE_NOTE}</i>{EDIT_HINT}"
+    )
+
+
+def member_admin_granted(pool: Pool) -> str:
+    return (
+        f"👮 Тебе призначено співвласником збору <b>{esc(pool.title)}</b>. "
+        "Тепер ти можеш підтверджувати оплати інших учасників і бачити /status."
+    )
+
+
+def member_admin_revoked(pool: Pool) -> str:
+    return f"Права співвласника у зборі <b>{esc(pool.title)}</b> знято."
 
 
 def confirm_remove_member(member: Member) -> str:

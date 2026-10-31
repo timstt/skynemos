@@ -31,7 +31,8 @@ async def test_sends_one_request_per_member(
         assert "Час скинутися" in request.text
         assert "100 грн" in request.text and "листопад 2026" in request.text
         claim = PaymentCB(action=PaymentAction.CLAIM, payment_id=payment.id).pack()
-        assert buttons(request) == [claim]
+        snooze = PaymentCB(action=PaymentAction.SNOOZE, payment_id=payment.id).pack()
+        assert buttons(request) == [claim, snooze]
         assert payment.notified_at is not None
 
 

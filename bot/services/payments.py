@@ -13,7 +13,7 @@
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
@@ -33,6 +33,8 @@ from bot.services.billing import (
 from bot.services.errors import DomainError, ErrorCode
 
 logger = logging.getLogger(__name__)
+
+DIGEST_AFTER_DAYS = 3  # підсумок власнику на 3-й день після списання
 
 ALLOWED_TRANSITIONS: dict[PaymentStatus, frozenset[PaymentStatus]] = {
     PaymentStatus.PENDING: frozenset({PaymentStatus.CLAIMED, PaymentStatus.PAID}),
@@ -66,6 +68,13 @@ class PoolStatus:
     @property
     def expected_kop(self) -> int:
         return sum(p.amount_kop for p in self.payments)
+
+
+@dataclass(frozen=True, slots=True)
+class Reminder:
+    payment: Payment
+    moment: datetime  # момент списання за період платежу
+    from_snooze: bool = False  # після «Нагадай завтра»
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +195,7 @@ class PaymentService:
 
     async def confirm(self, payment_id: int, owner: User, now: datetime) -> TransitionResult:
         """Власник: «Підтвердити» на заявці учасника."""
-        payment = await self._load_for_owner(payment_id, owner)
+        payment = await self._load_for_manager(payment_id, owner)
         if payment.status is PaymentStatus.PENDING:
             # Учасник не заявляв оплату (або заявку вже відхилили) — це ручна позначка
             raise DomainError(ErrorCode.INVALID_TRANSITION, "pending -> paid via confirm")
@@ -194,12 +203,12 @@ class PaymentService:
 
     async def reject(self, payment_id: int, owner: User, now: datetime) -> TransitionResult:
         """Власник: «Не бачу оплати» — назад у pending."""
-        payment = await self._load_for_owner(payment_id, owner)
+        payment = await self._load_for_manager(payment_id, owner)
         return await self._transition(payment, PaymentStatus.PENDING, now)
 
     async def mark_paid(self, payment_id: int, owner: User, now: datetime) -> TransitionResult:
         """Власник вручну позначає платіж оплаченим (наприклад, віддали готівкою)."""
-        payment = await self._load_for_owner(payment_id, owner)
+        payment = await self._load_for_manager(payment_id, owner)
         return await self._transition(payment, PaymentStatus.PAID, now)
 
     async def mark_paid_automatically(
@@ -208,23 +217,42 @@ class PaymentService:
         """Точка входу для фази 2: автопідтвердження за випискою банку."""
         return await self._transition(payment, PaymentStatus.PAID, now)
 
-    async def _load_for_owner(self, payment_id: int, owner: User) -> Payment:
+    async def _load_for_manager(self, payment_id: int, user: User) -> Payment:
+        """Платіж, яким може керувати власник або співвласник збору.
+
+        Співвласник не може підтверджувати власні платежі: це робить лише власник.
+        """
         payment = await self._load(payment_id)
-        if payment.member.pool.owner_id != owner.id:
+        pool = payment.member.pool
+        if pool.owner_id == user.id:
+            return payment
+        member = await self.members.get_by_pool_and_user(pool.id, user.id)
+        is_admin = member is not None and member.is_active and member.is_admin
+        if not is_admin or payment.member.user_id == user.id:
             raise DomainError(ErrorCode.NOT_POOL_OWNER)
         return payment
 
     # --- нагадування ---------------------------------------------------------
 
-    async def record_reminder(self, payment: Payment, moment: datetime, now: datetime) -> None:
-        """Фіксує надіслане нагадування. Пропущені під час простою не накопичуються."""
-        payment.reminders_sent = max(payment.reminders_sent + 1, reminders_due(moment, now))
+    async def record_reminder(self, reminder: "Reminder", now: datetime) -> None:
+        """Фіксує надіслане нагадування.
+
+        Пропущені під час простою не накопичуються. Нагадування після «Нагадай завтра»
+        не рахується в ліміт MAX_REMINDERS_PER_PERIOD: учасник сам про нього попросив.
+        """
+        payment = reminder.payment
+        if reminder.from_snooze:
+            payment.snoozed_until = None
+        else:
+            payment.reminders_sent = max(
+                payment.reminders_sent + 1, reminders_due(reminder.moment, now)
+            )
         payment.last_reminded_at = now
         await self.payments.save(payment)
 
-    async def payments_to_remind(self, now: datetime) -> list[tuple[Payment, datetime]]:
-        """Неоплачені платежі, яким зараз час нагадати, разом з моментом списання."""
-        result: list[tuple[Payment, datetime]] = []
+    async def payments_to_remind(self, now: datetime) -> list["Reminder"]:
+        """Неоплачені платежі, яким зараз час нагадати."""
+        result: list[Reminder] = []
         for payment in await self.payments.list_by_status(PaymentStatus.PENDING):
             if payment.notified_at is None or not self._deliverable(payment):
                 continue
@@ -234,9 +262,49 @@ class PaymentService:
                 (ensure_aware(t) for t in (payment.last_reminded_at, payment.notified_at) if t),
                 default=None,
             )
+            if payment.snoozed_until is not None:
+                # Поки діє «Нагадай завтра» — тиша; після — одне нагадування
+                if now < ensure_aware(payment.snoozed_until):
+                    continue
+                today = ensure_aware(now).astimezone(self.tz).date()
+                if last_contact is None or last_contact.astimezone(self.tz).date() != today:
+                    result.append(Reminder(payment, moment, from_snooze=True))
+                continue
             if should_remind(moment, now, payment.reminders_sent, last_contact, self.tz):
-                result.append((payment, moment))
+                result.append(Reminder(payment, moment))
         return result
+
+    async def snooze(self, payment_id: int, user: User, now: datetime) -> Payment:
+        """«Нагадай завтра»: наступне нагадування завтра о BILLING_HOUR за місцевим часом."""
+        payment = await self._load(payment_id)
+        if payment.member.user_id != user.id:
+            raise DomainError(ErrorCode.NOT_A_MEMBER)
+        if payment.status is not PaymentStatus.PENDING:
+            raise DomainError(ErrorCode.INVALID_TRANSITION, "snooze only for pending")
+        tomorrow = ensure_aware(now).astimezone(self.tz).date() + timedelta(days=1)
+        payment.snoozed_until = datetime.combine(tomorrow, time(self.billing_hour), tzinfo=self.tz)
+        await self.payments.save(payment)
+        return payment
+
+    # --- підсумок для власника ------------------------------------------------
+
+    async def digests_due(self, now: datetime) -> list[PoolStatus]:
+        """Збори, власнику яких час надіслати підсумок за останній період (3-й день)."""
+        result: list[PoolStatus] = []
+        for pool in await self.pools.list_active():
+            period = latest_due_period(now, pool.billing_day, self.tz, self.billing_hour)
+            if pool.digest_period == period:
+                continue
+            moment = self.billing_moment(pool, period)
+            if moment < ensure_aware(pool.active_since):
+                continue
+            if ensure_aware(now) < moment + timedelta(days=DIGEST_AFTER_DAYS):
+                continue
+            result.append(await self.pool_status(pool, now))
+        return result
+
+    async def mark_digest_sent(self, pool: Pool, period: date) -> None:
+        await self.pools.update(pool, digest_period=period)
 
     # --- доставка запитів «скинь» --------------------------------------------
 
@@ -289,6 +357,7 @@ class PaymentService:
         return PoolStatus(pool, period, payments, newcomers, next_billing)
 
     async def owner_statuses(self, owner: User, now: datetime) -> list[PoolStatus]:
-        return [
-            await self.pool_status(pool, now) for pool in await self.pools.list_by_owner(owner.id)
-        ]
+        """Статуси зборів, де користувач власник або співвласник."""
+        pools = list(await self.pools.list_by_owner(owner.id))
+        pools += [m.pool for m in await self.members.list_active_by_user(owner.id) if m.is_admin]
+        return [await self.pool_status(pool, now) for pool in pools]

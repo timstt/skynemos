@@ -119,7 +119,9 @@ async def show_pool(
         return
     debt = await PaymentService(session, tz, billing_hour).member_debt(member.id)
     await show(
-        callback, texts.member_pool_card(member, debt), keyboards.member_pool_kb(member.pool_id)
+        callback,
+        texts.member_pool_card(member, debt),
+        keyboards.member_pool_kb(member.pool_id, is_admin=member.is_admin),
     )
     await callback.answer()
 
@@ -301,6 +303,23 @@ async def member_action(
             await show(
                 callback, texts.member_card(member), keyboards.member_manage_kb(pool.id, member)
             )
+        elif action is MemberAction.SET_WEIGHT:
+            await state.set_state(EditPool.member_weight)
+            await state.update_data(pool_id=pool.id, member_id=member.id)
+            await show(
+                callback, texts.ask_member_weight(member), keyboards.back_to_pool_kb(pool.id)
+            )
+        elif action is MemberAction.TOGGLE_ADMIN:
+            member = await service.set_admin(pool.id, user, member.id, not member.is_admin)
+            text = (
+                texts.member_admin_granted(pool)
+                if member.is_admin
+                else texts.member_admin_revoked(pool)
+            )
+            await notify(bot, session, member.user, text)
+            await show(
+                callback, texts.member_card(member), keyboards.member_manage_kb(pool.id, member)
+            )
         elif action is MemberAction.REMOVE:
             await show(
                 callback,
@@ -346,6 +365,65 @@ async def got_member_share(
     await _finish_edit(message, state, service, update.pool)
 
 
+@router.message(EditPool.member_weight, F.text)
+async def got_member_weight(
+    message: Message, state: FSMContext, session: AsyncSession, user: User, bot: Bot
+) -> None:
+    service = PoolService(session)
+    data = await state.get_data()
+    try:
+        weight = _parse_weight(message.text or "")
+        update = await service.set_member_weight(data["pool_id"], user, data["member_id"], weight)
+    except DomainError as exc:
+        await message.answer(texts.error_text(exc))
+        if exc.code is not ErrorCode.INVALID_WEIGHT:
+            await state.clear()
+        return
+    await _notify_share_changes(bot, session, update.pool, update.changes)
+    await _finish_edit(message, state, service, update.pool)
+
+
+@router.callback_query(PoolCB.filter(F.action == PoolAction.OWNER_WEIGHT))
+async def start_owner_weight(
+    callback: CallbackQuery,
+    callback_data: PoolCB,
+    session: AsyncSession,
+    user: User,
+    state: FSMContext,
+) -> None:
+    pool = await _owned_pool_or_alert(callback, PoolService(session), callback_data.pool_id, user)
+    if pool is None:
+        return
+    await state.set_state(EditPool.owner_weight)
+    await state.update_data(pool_id=pool.id)
+    await show(callback, texts.ask_owner_weight(pool), keyboards.back_to_pool_kb(pool.id))
+    await callback.answer()
+
+
+@router.message(EditPool.owner_weight, F.text)
+async def got_owner_weight(
+    message: Message, state: FSMContext, session: AsyncSession, user: User, bot: Bot
+) -> None:
+    service = PoolService(session)
+    try:
+        weight = _parse_weight(message.text or "")
+        update = await service.set_owner_weight((await state.get_data())["pool_id"], user, weight)
+    except DomainError as exc:
+        await message.answer(texts.error_text(exc))
+        if exc.code is not ErrorCode.INVALID_WEIGHT:
+            await state.clear()
+        return
+    await _notify_share_changes(bot, session, update.pool, update.changes)
+    await _finish_edit(message, state, service, update.pool)
+
+
+def _parse_weight(raw: str) -> int:
+    try:
+        return int(raw.strip())
+    except ValueError as exc:
+        raise DomainError(ErrorCode.INVALID_WEIGHT) from exc
+
+
 # --- ручна позначка оплати ---------------------------------------------------------------
 
 
@@ -358,10 +436,15 @@ async def show_unpaid(
     tz: ZoneInfo,
     billing_hour: int,
 ) -> None:
-    pool = await _owned_pool_or_alert(callback, PoolService(session), callback_data.pool_id, user)
-    if pool is None:
+    try:
+        pool = await PoolService(session).get_managed_pool(callback_data.pool_id, user)
+    except DomainError as exc:
+        await callback.answer(texts.error_text(exc), show_alert=True)
         return
     payments = await PaymentService(session, tz, billing_hour).unpaid_for_pool(pool)
+    if pool.owner_id != user.id:
+        # Співвласник не підтверджує власні платежі
+        payments = [p for p in payments if p.member.user_id != user.id]
     text = texts.unpaid_list(pool) if payments else texts.NO_UNPAID
     await show(callback, text, keyboards.unpaid_kb(pool.id, payments))
     await callback.answer()

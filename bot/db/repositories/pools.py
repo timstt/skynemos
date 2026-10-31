@@ -68,7 +68,10 @@ class PoolRepository:
     async def list_active(self) -> Sequence[Pool]:
         """Усі збори не на паузі: для планувальника."""
         result = await self.session.execute(
-            select(Pool).where(Pool.is_paused.is_(False)).order_by(Pool.id)
+            select(Pool)
+            .where(Pool.is_paused.is_(False))
+            .options(selectinload(Pool.owner))
+            .order_by(Pool.id)
         )
         return result.scalars().all()
 

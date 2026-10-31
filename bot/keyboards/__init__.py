@@ -82,8 +82,10 @@ def owner_pool_kb(pool: Pool) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def member_pool_kb(pool_id: int) -> InlineKeyboardMarkup:
+def member_pool_kb(pool_id: int, *, is_admin: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    if is_admin:
+        _pool_btn(kb, texts.BTN_UNPAID_ADMIN, PoolAction.UNPAID, pool_id)
     _pool_btn(kb, texts.BTN_HISTORY, PoolAction.HISTORY, pool_id)
     _pool_btn(kb, texts.BTN_LEAVE, PoolAction.LEAVE, pool_id)
     kb.button(text=texts.BTN_BACK_TO_LIST, callback_data=PoolCB(action=PoolAction.LIST))
@@ -108,6 +110,8 @@ def members_kb(pool: Pool, members: Sequence[Member]) -> InlineKeyboardMarkup:
             text=f"{texts.plain_name(member.user)} — {format_money(member.share_kop)}",
             callback_data=MemberCB(action=MemberAction.VIEW, pool_id=pool.id, member_id=member.id),
         )
+    if pool.include_owner:
+        _pool_btn(kb, texts.btn_owner_weight(pool.owner_weight), PoolAction.OWNER_WEIGHT, pool.id)
     _pool_btn(kb, texts.BTN_BACK, PoolAction.VIEW, pool.id)
     kb.adjust(1)
     return kb.as_markup()
@@ -122,6 +126,11 @@ def member_manage_kb(pool_id: int, member: Member) -> InlineKeyboardMarkup:
     kb.button(text=texts.BTN_SET_SHARE, callback_data=cb(MemberAction.SET_SHARE))
     if member.share_is_custom:
         kb.button(text=texts.BTN_SHARE_AUTO, callback_data=cb(MemberAction.SHARE_AUTO))
+    kb.button(
+        text=texts.btn_member_weight(member.weight), callback_data=cb(MemberAction.SET_WEIGHT)
+    )
+    admin_text = texts.BTN_REVOKE_ADMIN if member.is_admin else texts.BTN_MAKE_ADMIN
+    kb.button(text=admin_text, callback_data=cb(MemberAction.TOGGLE_ADMIN))
     kb.button(text=texts.BTN_REMOVE_MEMBER, callback_data=cb(MemberAction.REMOVE))
     _pool_btn(kb, texts.BTN_BACK, PoolAction.MEMBERS, pool_id)
     kb.adjust(1)
@@ -164,6 +173,10 @@ def payment_request_kb(payment: Payment) -> InlineKeyboardMarkup:
     kb.button(
         text=texts.BTN_CLAIM,
         callback_data=PaymentCB(action=PaymentAction.CLAIM, payment_id=payment.id),
+    )
+    kb.button(
+        text=texts.BTN_SNOOZE,
+        callback_data=PaymentCB(action=PaymentAction.SNOOZE, payment_id=payment.id),
     )
     kb.adjust(1)
     return kb.as_markup()

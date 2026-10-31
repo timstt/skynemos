@@ -66,6 +66,8 @@ class MemberRepository:
 
     async def set_active(self, member: Member, active: bool) -> None:
         member.is_active = active
+        if not active:
+            member.is_admin = False  # після повернення права співвласника треба дати знову
         await self.session.flush()
 
     async def set_share(self, member: Member, share_kop: int, *, custom: bool) -> None:

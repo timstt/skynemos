@@ -33,6 +33,7 @@ class PoolAction(StrEnum):
     RESUME = "resume"
     DELETE = "delete"
     DELETE_CONFIRM = "delete_ok"
+    OWNER_WEIGHT = "owner_weight"
     # учасник
     HISTORY = "history"
     LEAVE = "leave"
@@ -50,6 +51,8 @@ class MemberAction(StrEnum):
     SHARE_AUTO = "auto"
     REMOVE = "remove"
     REMOVE_CONFIRM = "remove_ok"
+    SET_WEIGHT = "weight"
+    TOGGLE_ADMIN = "admin"
 
 
 class MemberCB(CallbackData, prefix="mem"):
@@ -63,6 +66,7 @@ class PaymentAction(StrEnum):
     CONFIRM = "confirm"
     REJECT = "reject"
     MARK_PAID = "mark"  # власник вручну (готівка тощо)
+    SNOOZE = "snooze"  # учасник: «Нагадай завтра»
 
 
 class PaymentCB(CallbackData, prefix="pay"):

@@ -74,7 +74,10 @@ async def test_reject_returns_to_pending_and_member_can_claim_again(harness: Har
 
     rejected = harness.api.sent_to(GUEST["id"])[-1]
     assert "поки не бачить твоєї оплати" in rejected.text
-    assert buttons(rejected) == [cb(PaymentAction.CLAIM, payment_id)]
+    assert buttons(rejected) == [
+        cb(PaymentAction.CLAIM, payment_id),
+        cb(PaymentAction.SNOOZE, payment_id),
+    ]
     [payment] = await load_payments(harness.engine)
     assert payment.status is PaymentStatus.PENDING
 

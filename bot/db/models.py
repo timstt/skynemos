@@ -108,6 +108,7 @@ class Pool(Base):
         CheckConstraint("total_amount_kop > 0", name="total_amount_positive"),
         CheckConstraint("billing_day BETWEEN 1 AND 31", name="billing_day_range"),
         CheckConstraint("owner_share_kop >= 0", name="owner_share_non_negative"),
+        CheckConstraint("owner_weight BETWEEN 1 AND 10", name="owner_weight_range"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -130,6 +131,10 @@ class Pool(Base):
     # З якого моменту збір активний (створення або останнє зняття з паузи).
     # Платежі створюються лише за цикли, чий момент списання не раніше цієї дати.
     active_since: Mapped[datetime] = _now_column()
+    # Скільки «часток» бере власник при розподілі за вагами (якщо include_owner)
+    owner_weight: Mapped[int] = mapped_column(SmallInteger, default=1, server_default="1")
+    # Період, за який власнику вже надіслано підсумок на 3-й день (захист від повторів)
+    digest_period: Mapped[date | None] = mapped_column(Date)
 
     owner: Mapped[User] = relationship(back_populates="owned_pools")
     members: Mapped[list[Member]] = relationship(
@@ -144,6 +149,7 @@ class Member(Base):
     __table_args__ = (
         UniqueConstraint("pool_id", "user_id", name="uq_members_pool_id_user_id"),
         CheckConstraint("share_kop >= 0", name="share_non_negative"),
+        CheckConstraint("weight BETWEEN 1 AND 10", name="weight_range"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -157,6 +163,10 @@ class Member(Base):
     # True, якщо власник вручну задав частку: авторозподіл її не чіпає
     share_is_custom: Mapped[bool] = mapped_column(default=False, server_default=false())
     is_active: Mapped[bool] = mapped_column(default=True, server_default=true())
+    # Кількість «часток» учасника (родина з двох = 2); ручна частка має пріоритет
+    weight: Mapped[int] = mapped_column(SmallInteger, default=1, server_default="1")
+    # Співвласник: може підтверджувати оплати, але не керувати збором
+    is_admin: Mapped[bool] = mapped_column(default=False, server_default=false())
     joined_at: Mapped[datetime] = _now_column()
 
     pool: Mapped[Pool] = relationship(back_populates="members")
@@ -198,6 +208,8 @@ class Payment(Base):
     )
     # Коли учаснику надіслано запит «скинь»; NULL — ще не доставлено (буде повтор)
     notified_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    # «Нагадай завтра»: до цього моменту нагадувань немає, потім одне
+    snoozed_until: Mapped[datetime | None] = mapped_column(UTCDateTime())
     reminders_sent: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
     last_reminded_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = _now_column()

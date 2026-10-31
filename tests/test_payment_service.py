@@ -11,6 +11,7 @@ from bot.services.errors import DomainError, ErrorCode
 from bot.services.payments import (
     ALLOWED_TRANSITIONS,
     PaymentService,
+    Reminder,
     apply_transition,
 )
 from bot.services.pools import NewPoolData, PoolService
@@ -330,11 +331,11 @@ async def test_record_reminder_skips_missed_ones(
 ) -> None:
     payment, _, _ = await _payment(service, session, make_user)
 
-    await service.record_reminder(payment, NOV_MOMENT, NOV_MOMENT + timedelta(days=2))
+    await service.record_reminder(Reminder(payment, NOV_MOMENT), NOV_MOMENT + timedelta(days=2))
     assert payment.reminders_sent == 1
 
     # Після простою на 6-й день: одне нагадування закриває обидва пропущені
     payment.reminders_sent = 0
-    await service.record_reminder(payment, NOV_MOMENT, NOV_MOMENT + timedelta(days=6))
+    await service.record_reminder(Reminder(payment, NOV_MOMENT), NOV_MOMENT + timedelta(days=6))
     assert payment.reminders_sent == 2
     assert payment.last_reminded_at == NOV_MOMENT + timedelta(days=6)
