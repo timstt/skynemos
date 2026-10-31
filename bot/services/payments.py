@@ -72,6 +72,8 @@ class PoolStatus:
 class TransitionResult:
     payment: Payment
     changed: bool  # False — статус уже був цільовим (повторне натискання)
+    # True, якщо цей перехід у paid закрив останній неоплачений платіж періоду в зборі
+    period_completed: bool = False
 
 
 def apply_transition(payment: Payment, target: PaymentStatus, now: datetime) -> bool:
@@ -165,7 +167,13 @@ class PaymentService:
         await self.payments.save(payment)
         if changed:
             logger.info("Payment %s: %s -> %s", payment.id, old.value, target.value)
-        return TransitionResult(payment, changed)
+        completed = (
+            changed
+            and target is PaymentStatus.PAID
+            and await self.payments.count_unpaid_in_pool_period(payment.member_id, payment.period)
+            == 0
+        )
+        return TransitionResult(payment, changed, completed)
 
     async def claim(self, payment_id: int, user: User, now: datetime) -> TransitionResult:
         """Учасник натиснув «Я скинув ✅»."""
@@ -253,6 +261,17 @@ class PaymentService:
     async def unpaid_for_pool(self, pool: Pool) -> Sequence[Payment]:
         """Що власник може позначити оплаченим вручну (виклик після перевірки прав)."""
         return await self.payments.list_unpaid_for_pool(pool.id)
+
+    async def member_debt(self, member_id: int, *, before: date | None = None) -> list[Payment]:
+        """Неоплачені платежі учасника (накопичений борг), від найстарішого.
+
+        `before` — лише за періоди до вказаного (для блоку «ще не оплачено раніше»).
+        """
+        return [
+            p
+            for p in await self.payments.list_unpaid_for_member(member_id)
+            if before is None or p.period < before
+        ]
 
     async def member_history(self, member: Member, limit: int = 12) -> Sequence[Payment]:
         return await self.payments.list_for_member(member.id, limit)

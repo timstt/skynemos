@@ -13,9 +13,16 @@ from bot.handlers.common import show
 from bot.keyboards.callbacks import PaymentAction, PaymentCB
 from bot.notifier import notify
 from bot.services.errors import DomainError
-from bot.services.payments import PaymentService
+from bot.services.payments import PaymentService, TransitionResult
 
 router = Router(name="payments")
+
+
+async def _announce_if_completed(bot: Bot, session: AsyncSession, result: TransitionResult) -> None:
+    """Останній платіж періоду підтверджено: радісне повідомлення власнику."""
+    if result.period_completed:
+        pool = result.payment.member.pool
+        await notify(bot, session, pool.owner, texts.owner_all_paid(pool, result.payment.period))
 
 
 @router.callback_query(PaymentCB.filter(F.action == PaymentAction.CLAIM))
@@ -76,6 +83,7 @@ async def confirm(
         return
     await callback.answer("Підтверджено ✅")
     await notify(bot, session, result.payment.member.user, texts.member_confirmed(result.payment))
+    await _announce_if_completed(bot, session, result)
 
 
 @router.callback_query(PaymentCB.filter(F.action == PaymentAction.REJECT))
@@ -106,7 +114,7 @@ async def reject(
         session,
         payment.member.user,
         texts.member_rejected(payment),
-        keyboards.payment_request_kb(payment.id),
+        keyboards.payment_request_kb(payment),
     )
 
 
@@ -144,6 +152,7 @@ async def mark_paid(
     if result.changed:
         await callback.answer(texts.MARKED_PAID_ALERT)
         await notify(bot, session, payment.member.user, texts.member_marked_paid(payment))
+        await _announce_if_completed(bot, session, result)
     else:
         await callback.answer(texts.ALREADY_PAID)
     unpaid = await service.unpaid_for_pool(pool)

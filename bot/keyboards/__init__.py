@@ -17,6 +17,7 @@ from bot.keyboards.callbacks import (
     PoolAction,
     PoolCB,
 )
+from bot.services.details import is_monobank_jar, payment_url
 from bot.services.money import format_money
 
 
@@ -153,12 +154,18 @@ def open_pool_kb(pool_id: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def payment_request_kb(payment_id: int) -> InlineKeyboardMarkup:
+def payment_request_kb(payment: Payment) -> InlineKeyboardMarkup:
+    """«Я скинув» + (якщо в реквізитах є посилання) кнопка відкрити його для оплати."""
     kb = InlineKeyboardBuilder()
+    url = payment_url(payment.member.pool.payment_details)
+    if url is not None:
+        label = texts.BTN_OPEN_JAR if is_monobank_jar(url) else texts.BTN_OPEN_PAY_LINK
+        kb.button(text=label, url=url)
     kb.button(
         text=texts.BTN_CLAIM,
-        callback_data=PaymentCB(action=PaymentAction.CLAIM, payment_id=payment_id),
+        callback_data=PaymentCB(action=PaymentAction.CLAIM, payment_id=payment.id),
     )
+    kb.adjust(1)
     return kb.as_markup()
 
 

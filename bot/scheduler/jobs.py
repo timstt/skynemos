@@ -89,8 +89,10 @@ class BillingJob:
                     self.bot,
                     session,
                     payment.member.user,
-                    texts.payment_request(payment),
-                    keyboards.payment_request_kb(payment.id),
+                    texts.payment_request(
+                        payment, await service.member_debt(payment.member_id, before=payment.period)
+                    ),
+                    keyboards.payment_request_kb(payment),
                 )
                 if delivery is Delivery.SENT:
                     await service.mark_notified(payment, now)
@@ -109,8 +111,10 @@ class BillingJob:
                     self.bot,
                     session,
                     payment.member.user,
-                    texts.payment_reminder(payment),
-                    keyboards.payment_request_kb(payment.id),
+                    texts.payment_reminder(
+                        payment, await service.member_debt(payment.member_id, before=payment.period)
+                    ),
+                    keyboards.payment_request_kb(payment),
                 )
                 if delivery is Delivery.SENT:
                     await service.record_reminder(payment, moment, now)

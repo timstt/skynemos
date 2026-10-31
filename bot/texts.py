@@ -8,6 +8,7 @@ from datetime import date, datetime
 from html import escape as esc
 
 from bot.db.models import Member, Payment, PaymentStatus, Pool, User
+from bot.services.details import format_details_html
 from bot.services.errors import DomainError, ErrorCode
 from bot.services.money import format_money
 from bot.services.payments import PoolStatus
@@ -69,6 +70,8 @@ BTN_BACK_TO_LIST = "⬅️ До списку зборів"
 BTN_BACK = "⬅️ Назад"
 BTN_OPEN_POOL = "Відкрити збір"
 BTN_CLAIM = "Я скинув ✅"
+BTN_OPEN_JAR = "💳 Відкрити банку"
+BTN_OPEN_PAY_LINK = "🔗 Відкрити посилання для оплати"
 BTN_CONFIRM = "✅ Підтвердити"
 BTN_REJECT = "❌ Не бачу оплати"
 BTN_REGEN_INVITE = "🔄 Нове посилання"
@@ -184,7 +187,7 @@ def confirm_pool(data: NewPoolData) -> str:
         f"💰 Сума: {format_money(data.total_amount_kop)} на місяць\n"
         f"📅 Списання: {billing_day_text(data.billing_day)}\n"
         f"👑 Ти в розподілі: {'так' if data.include_owner else 'ні'}\n"
-        f"💳 Реквізити: {esc(data.payment_details)}"
+        f"💳 Реквізити: {format_details_html(data.payment_details)}"
     )
 
 
@@ -226,7 +229,7 @@ def joined(result: JoinResult) -> str:
         f"{hello}! Ти в зборі <b>{esc(pool.title)}</b> 🎉\n\n"
         f"🧮 Твоя частка: <b>{format_money(result.member.share_kop)}</b> на місяць\n"
         f"📅 Я нагадаю {billing_day_text(pool.billing_day)}.\n"
-        f"💳 Реквізити: {esc(pool.payment_details)}\n\n"
+        f"💳 Реквізити: {format_details_html(pool.payment_details)}\n\n"
         "Якщо хтось ще приєднається, частка може змінитися з наступного місяця."
     )
 
@@ -270,7 +273,7 @@ def _pool_header(pool: Pool) -> list[str]:
 
 def owner_pool_card(pool: Pool, members: Sequence[Member]) -> str:
     lines = _pool_header(pool)
-    lines.append(f"💳 Реквізити: {esc(pool.payment_details)}")
+    lines.append(f"💳 Реквізити: {format_details_html(pool.payment_details)}")
     lines.append(f"\n<b>Учасники ({len(members)}/{MAX_MEMBERS}):</b>")
     if pool.include_owner or pool.owner_share_kop:
         label = "Ти" if pool.include_owner else "Ти (невкрита частина)"
@@ -284,14 +287,20 @@ def owner_pool_card(pool: Pool, members: Sequence[Member]) -> str:
     return "\n".join(lines)
 
 
-def member_pool_card(member: Member) -> str:
+def member_pool_card(member: Member, unpaid: Sequence[Payment] = ()) -> str:
     pool = member.pool
     lines = _pool_header(pool)
     lines += [
         f"👑 Власник: {mention(pool.owner)}",
         f"🧮 Твоя частка: <b>{format_money(member.share_kop)}</b>",
-        f"💳 Реквізити: {esc(pool.payment_details)}",
+        f"💳 Реквізити: {format_details_html(pool.payment_details)}",
     ]
+    if unpaid:
+        months = ", ".join(period_name(p.period) for p in unpaid)
+        total = sum(p.amount_kop for p in unpaid)
+        lines.append(f"\n⚠️ Не оплачено: <b>{format_money(total)}</b> ({months})")
+    else:
+        lines.append("\n✅ Боргів немає")
     return "\n".join(lines)
 
 
@@ -328,22 +337,40 @@ def _payment_body(payment: Payment) -> str:
         f"📌 <b>{esc(pool.title)}</b> — {period_name(payment.period)}\n"
         f"💰 Твоя частка: <b>{format_money(payment.amount_kop)}</b>\n"
         f"👑 Отримувач: {mention(pool.owner)}\n"
-        f"💳 Реквізити: {esc(pool.payment_details)}"
+        f"💳 Реквізити: {format_details_html(pool.payment_details)}"
     )
 
 
-def payment_request(payment: Payment) -> str:
+def debt_block(payment: Payment, earlier: Sequence[Payment]) -> str:
+    """Блок «ще не оплачено раніше» з підсумком разом із поточним платежем."""
+    if not earlier:
+        return ""
+    lines = [f"• {period_name(p.period)} — {format_money(p.amount_kop)}" for p in earlier]
+    total = payment.amount_kop + sum(p.amount_kop for p in earlier)
     return (
-        f"Час скинутися 💸\n\n{_payment_body(payment)}\n\n"
+        "\n\n⚠️ Ще не оплачено раніше:\n"
+        + "\n".join(lines)
+        + f"\nРазом з цим платежем: <b>{format_money(total)}</b>"
+    )
+
+
+def payment_request(payment: Payment, earlier: Sequence[Payment] = ()) -> str:
+    return (
+        f"Час скинутися 💸\n\n{_payment_body(payment)}{debt_block(payment, earlier)}\n\n"
         "Коли переведеш гроші, натисни кнопку нижче."
     )
 
 
-def payment_reminder(payment: Payment) -> str:
+def payment_reminder(payment: Payment, earlier: Sequence[Payment] = ()) -> str:
     return (
-        f"Нагадую 🙂 Схоже, за цей місяць ще не скинуто.\n\n{_payment_body(payment)}\n\n"
+        "Нагадую 🙂 Схоже, за цей місяць ще не скинуто.\n\n"
+        f"{_payment_body(payment)}{debt_block(payment, earlier)}\n\n"
         "Якщо вже переказав(-ла), натисни кнопку, щоб власник перевірив."
     )
+
+
+def owner_all_paid(pool: Pool, period: date) -> str:
+    return f"🎉 Усі скинули за {period_name(period)} у зборі <b>{esc(pool.title)}</b>!"
 
 
 def payment_claimed_member(payment: Payment) -> str:
@@ -478,7 +505,8 @@ def ask_new_day(pool: Pool) -> str:
 
 
 def ask_new_details(pool: Pool) -> str:
-    return f"Зараз реквізити: {esc(pool.payment_details)}\n\nНадішли нові реквізити.{EDIT_HINT}"
+    details = format_details_html(pool.payment_details)
+    return f"Зараз реквізити: {details}\n\nНадішли нові реквізити.{EDIT_HINT}"
 
 
 def ask_member_share(pool: Pool, member: Member) -> str:
@@ -594,7 +622,7 @@ def member_day_changed(pool: Pool) -> str:
 def member_details_changed(pool: Pool) -> str:
     return (
         f"💳 У зборі <b>{esc(pool.title)}</b> нові реквізити для оплати:\n"
-        f"{esc(pool.payment_details)}"
+        f"{format_details_html(pool.payment_details)}"
     )
 
 

@@ -52,7 +52,10 @@ async def test_claim_then_confirm(harness: Harness) -> None:
     assert len(harness.api.sent_to(OWNER["id"])) == 1
 
     await harness.click(OWNER, cb(PaymentAction.CONFIRM, payment_id))
-    assert "Підтверджено" in harness.api.texts_to(OWNER["id"])[-1]
+    owner_texts = harness.api.texts_to(OWNER["id"])
+    assert "Підтверджено" in owner_texts[-2]
+    # Це був єдиний платіж періоду — власник отримує «усі скинули»
+    assert "Усі скинули" in owner_texts[-1]
     assert "підтвердив(-ла) твою оплату" in harness.api.sent_to(GUEST["id"])[-1].text
     [payment] = await load_payments(harness.engine)
     assert payment.status is PaymentStatus.PAID

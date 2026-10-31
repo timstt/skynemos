@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from datetime import date
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -77,6 +77,30 @@ class PaymentRepository:
             .where(Member.pool_id == pool_id, Payment.status != PaymentStatus.PAID)
             .options(selectinload(Payment.member).selectinload(Member.user))
             .order_by(Payment.period, Member.joined_at, Member.id)
+        )
+        return result.scalars().all()
+
+    async def count_unpaid_in_pool_period(self, member_id: int, period: date) -> int:
+        """Скільки неоплачених платежів за `period` у зборі, до якого належить `member_id`."""
+        pool_id = select(Member.pool_id).where(Member.id == member_id).scalar_subquery()
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(Payment)
+            .join(Payment.member)
+            .where(
+                Member.pool_id == pool_id,
+                Payment.period == period,
+                Payment.status != PaymentStatus.PAID,
+            )
+        )
+        return result.scalar_one()
+
+    async def list_unpaid_for_member(self, member_id: int) -> Sequence[Payment]:
+        """Неоплачені платежі учасника, від найстарішого (для показу боргу)."""
+        result = await self.session.execute(
+            select(Payment)
+            .where(Payment.member_id == member_id, Payment.status != PaymentStatus.PAID)
+            .order_by(Payment.period)
         )
         return result.scalars().all()
 

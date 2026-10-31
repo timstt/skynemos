@@ -96,6 +96,8 @@ async def show_pool(
     session: AsyncSession,
     user: User,
     state: FSMContext,
+    tz: ZoneInfo,
+    billing_hour: int,
 ) -> None:
     await state.clear()  # «Назад» з режиму редагування скасовує його
     service = PoolService(session)
@@ -115,7 +117,10 @@ async def show_pool(
     except DomainError as exc:
         await callback.answer(texts.error_text(exc), show_alert=True)
         return
-    await show(callback, texts.member_pool_card(member), keyboards.member_pool_kb(member.pool_id))
+    debt = await PaymentService(session, tz, billing_hour).member_debt(member.id)
+    await show(
+        callback, texts.member_pool_card(member, debt), keyboards.member_pool_kb(member.pool_id)
+    )
     await callback.answer()
 
 
