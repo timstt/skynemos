@@ -9,7 +9,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY bot ./bot
-RUN pip install .
+RUN pip install ".[redis,sentry]"
 
 COPY alembic.ini ./
 COPY migrations ./migrations

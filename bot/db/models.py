@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import enum
 from datetime import UTC, date, datetime
-from typing import Any, ClassVar
 
 from sqlalchemy import (
     BigInteger,
@@ -41,7 +40,7 @@ INVITE_TOKEN_LENGTH = 32
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
     # Після INSERT одразу підтягувати серверні дефолти: в async лінива догрузка неможлива
-    __mapper_args__: ClassVar[dict[str, Any]] = {"eager_defaults": True}
+    __mapper_args__ = {"eager_defaults": True}  # noqa: RUF012 — тип задає DeclarativeBase
 
 
 class PaymentStatus(enum.StrEnum):

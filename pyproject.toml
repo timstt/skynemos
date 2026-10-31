@@ -21,7 +21,13 @@ dev = [
     "pytest-asyncio>=0.24",
     "aiosqlite>=0.20",
     "ruff>=0.6",
+    "mypy>=1.11",
+    "pytest-cov>=5.0",
 ]
+# Опційно: FSM-стан у Redis (переживає перезапуск бота)
+redis = ["redis>=5.0"]
+# Опційно: звіти про помилки в Sentry
+sentry = ["sentry-sdk>=2.0"]
 
 [build-system]
 requires = ["hatchling"]
@@ -39,6 +45,25 @@ extend-exclude = ["migrations/versions"]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "ASYNC", "RUF"]
 # Кирилиця в текстах і коментарях навмисна, а не «схожі на латиницю» символи
 ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["bot"]
+strict = true
+warn_unreachable = true
+# Бібліотеки без type hints
+[[tool.mypy.overrides]]
+module = ["apscheduler.*", "sentry_sdk.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["bot"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if __name__ == .__main__.:", "pragma: no cover"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

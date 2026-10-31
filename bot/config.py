@@ -28,6 +28,11 @@ class Settings(DatabaseSettings):
     log_level: str = "INFO"
     # Година (за `timezone`), о котрій створюються платежі в день списання
     billing_hour: int = Field(default=10, ge=0, le=23)
+    # Опційно: FSM-стан у Redis (інакше в пам'яті і губиться при перезапуску)
+    redis_url: str | None = None
+    # Опційно: звіти про помилки в Sentry
+    sentry_dsn: SecretStr | None = None
+    environment: str = "production"
 
     @field_validator("bot_token")
     @classmethod

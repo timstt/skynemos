@@ -1,3 +1,4 @@
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -5,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from bot.__main__ import create_dispatcher
 from bot.db.models import Base, Pool, User
@@ -19,8 +20,23 @@ MakePool = Callable[..., Awaitable[Pool]]
 KYIV = ZoneInfo("Europe/Kyiv")
 
 
+# Якщо задано (напр. у CI), тести йдуть на справжньому PostgreSQL; інакше — SQLite у пам'яті
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
+
+
 @pytest.fixture
 async def engine() -> AsyncIterator[AsyncEngine]:
+    if TEST_DATABASE_URL:
+        engine = create_engine(TEST_DATABASE_URL, poolclass=NullPool)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+        yield engine
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        await engine.dispose()
+        return
+
     # StaticPool: одне з'єднання, інакше кожне отримало б свою порожню in-memory БД
     engine = create_engine("sqlite+aiosqlite://", poolclass=StaticPool)
     async with engine.begin() as conn:

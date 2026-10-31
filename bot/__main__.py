@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.base import BaseStorage
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 from pydantic import ValidationError
@@ -15,6 +16,7 @@ from bot.config import Settings, get_settings
 from bot.db.session import create_engine, create_session_factory
 from bot.handlers import get_root_router
 from bot.handlers.errors import on_error
+from bot.integrations import create_storage, setup_sentry
 from bot.middlewares import DbSessionMiddleware, UserMiddleware
 from bot.scheduler import BillingJob, create_scheduler
 
@@ -38,10 +40,11 @@ def create_dispatcher(
     *,
     tz: ZoneInfo = DEFAULT_TZ,
     billing_hour: int = 10,
+    storage: BaseStorage | None = None,
 ) -> Dispatcher:
-    # MemoryStorage: стан діалогу /new губиться при перезапуску (див. DECISIONS.md).
+    # Без Redis стан діалогу /new губиться при перезапуску (див. DECISIONS.md).
     # tz і billing_hour потрапляють у хендлери як однойменні аргументи.
-    dp = Dispatcher(storage=MemoryStorage(), tz=tz, billing_hour=billing_hour)
+    dp = Dispatcher(storage=storage or MemoryStorage(), tz=tz, billing_hour=billing_hour)
     dp.update.outer_middleware(DbSessionMiddleware(session_factory))
     dp.update.outer_middleware(UserMiddleware())
     dp.errors.register(on_error)
@@ -57,7 +60,12 @@ async def main(settings: Settings) -> None:
     )
     engine = create_engine(settings.database_url)
     session_factory = create_session_factory(engine)
-    dp = create_dispatcher(session_factory, tz=settings.tz, billing_hour=settings.billing_hour)
+    dp = create_dispatcher(
+        session_factory,
+        tz=settings.tz,
+        billing_hour=settings.billing_hour,
+        storage=create_storage(settings.redis_url),
+    )
 
     job = BillingJob(bot, session_factory, settings.tz, settings.billing_hour)
     scheduler = create_scheduler(job, settings.tz)
@@ -75,6 +83,7 @@ async def main(settings: Settings) -> None:
         scheduler.shutdown(wait=False)
         if not catch_up.done():
             catch_up.cancel()
+        await dp.storage.close()
         await bot.session.close()
         await engine.dispose()
 
@@ -87,6 +96,8 @@ def run() -> None:
         logger.critical("Помилка конфігурації, перевір .env:\n%s", exc)
         raise SystemExit(1) from None
     setup_logging(settings.log_level)
+    dsn = settings.sentry_dsn.get_secret_value() if settings.sentry_dsn else None
+    setup_sentry(dsn, settings.environment)
     try:
         asyncio.run(main(settings))
     except (KeyboardInterrupt, SystemExit):
