@@ -242,6 +242,13 @@ class PaymentService:
     async def list_for_pool_period(self, pool: Pool, period: date) -> Sequence[Payment]:
         return await self.payments.list_for_pool_period(pool.id, period)
 
+    async def unpaid_for_pool(self, pool: Pool) -> Sequence[Payment]:
+        """Що власник може позначити оплаченим вручну (виклик після перевірки прав)."""
+        return await self.payments.list_unpaid_for_pool(pool.id)
+
+    async def member_history(self, member: Member, limit: int = 12) -> Sequence[Payment]:
+        return await self.payments.list_for_member(member.id, limit)
+
     async def pool_status(self, pool: Pool, now: datetime) -> PoolStatus:
         period = latest_due_period(now, pool.billing_day, self.tz, self.billing_hour)
         next_billing = self.billing_moment(pool, add_months(period, 1))

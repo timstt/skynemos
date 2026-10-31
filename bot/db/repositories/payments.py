@@ -69,6 +69,17 @@ class PaymentRepository:
         )
         return result.scalars().all()
 
+    async def list_unpaid_for_pool(self, pool_id: int) -> Sequence[Payment]:
+        """Неоплачені (pending/claimed) платежі збору, від найстаріших."""
+        result = await self.session.execute(
+            select(Payment)
+            .join(Payment.member)
+            .where(Member.pool_id == pool_id, Payment.status != PaymentStatus.PAID)
+            .options(selectinload(Payment.member).selectinload(Member.user))
+            .order_by(Payment.period, Member.joined_at, Member.id)
+        )
+        return result.scalars().all()
+
     async def list_for_member(self, member_id: int, limit: int = 12) -> Sequence[Payment]:
         result = await self.session.execute(
             select(Payment)

@@ -21,7 +21,22 @@ class JoinCB(CallbackData, prefix="join"):
 class PoolAction(StrEnum):
     LIST = "list"
     VIEW = "view"
+    # власник
     INVITE = "invite"
+    REGEN_INVITE = "regen"
+    EDIT_AMOUNT = "amount"
+    EDIT_DAY = "day"
+    EDIT_DETAILS = "details"
+    MEMBERS = "members"
+    UNPAID = "unpaid"
+    PAUSE = "pause"
+    RESUME = "resume"
+    DELETE = "delete"
+    DELETE_CONFIRM = "delete_ok"
+    # учасник
+    HISTORY = "history"
+    LEAVE = "leave"
+    LEAVE_CONFIRM = "leave_ok"
 
 
 class PoolCB(CallbackData, prefix="pool"):
@@ -29,10 +44,25 @@ class PoolCB(CallbackData, prefix="pool"):
     pool_id: int = 0
 
 
+class MemberAction(StrEnum):
+    VIEW = "view"
+    SET_SHARE = "share"
+    SHARE_AUTO = "auto"
+    REMOVE = "remove"
+    REMOVE_CONFIRM = "remove_ok"
+
+
+class MemberCB(CallbackData, prefix="mem"):
+    action: MemberAction
+    pool_id: int
+    member_id: int
+
+
 class PaymentAction(StrEnum):
     CLAIM = "claim"
     CONFIRM = "confirm"
     REJECT = "reject"
+    MARK_PAID = "mark"  # власник вручну (готівка тощо)
 
 
 class PaymentCB(CallbackData, prefix="pay"):

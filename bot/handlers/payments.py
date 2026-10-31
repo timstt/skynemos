@@ -119,3 +119,37 @@ async def cmd_status(
         await message.answer(texts.STATUS_NO_POOLS)
         return
     await message.answer(texts.statuses(statuses))
+
+
+@router.callback_query(PaymentCB.filter(F.action == PaymentAction.MARK_PAID))
+async def mark_paid(
+    callback: CallbackQuery,
+    callback_data: PaymentCB,
+    session: AsyncSession,
+    user: User,
+    bot: Bot,
+    tz: ZoneInfo,
+    billing_hour: int,
+) -> None:
+    """Власник вручну позначає платіж оплаченим (зі списку «Позначити оплату вручну»)."""
+    service = PaymentService(session, tz, billing_hour)
+    try:
+        result = await service.mark_paid(callback_data.payment_id, user, utcnow())
+    except DomainError as exc:
+        await callback.answer(texts.error_text(exc), show_alert=True)
+        return
+
+    payment = result.payment
+    pool = payment.member.pool
+    if result.changed:
+        await callback.answer(texts.MARKED_PAID_ALERT)
+        await notify(bot, session, payment.member.user, texts.member_marked_paid(payment))
+    else:
+        await callback.answer(texts.ALREADY_PAID)
+    unpaid = await service.unpaid_for_pool(pool)
+    text = texts.unpaid_list(pool) if unpaid else texts.NO_UNPAID
+    await show(
+        callback,
+        f"{texts.marked_paid_owner(payment)}\n\n{text}",
+        keyboards.unpaid_kb(pool.id, unpaid),
+    )

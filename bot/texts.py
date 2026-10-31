@@ -68,6 +68,24 @@ BTN_OPEN_POOL = "Відкрити збір"
 BTN_CLAIM = "Я скинув ✅"
 BTN_CONFIRM = "✅ Підтвердити"
 BTN_REJECT = "❌ Не бачу оплати"
+BTN_REGEN_INVITE = "🔄 Нове посилання"
+BTN_EDIT_AMOUNT = "✏️ Сума"
+BTN_EDIT_DAY = "📅 День"
+BTN_EDIT_DETAILS = "💳 Реквізити"
+BTN_MEMBERS = "👥 Учасники й частки"
+BTN_MARK_PAID = "✅ Позначити оплату вручну"
+BTN_PAUSE = "⏸ Поставити на паузу"
+BTN_RESUME = "▶️ Відновити збір"
+BTN_DELETE = "🗑 Видалити збір"
+BTN_DELETE_CONFIRM = "Так, видалити"
+BTN_KEEP = "Ні, залишити"
+BTN_HISTORY = "📜 Історія платежів"
+BTN_LEAVE = "🚪 Вийти зі збору"
+BTN_LEAVE_CONFIRM = "Так, вийти"
+BTN_STAY = "Ні, лишаюся"
+BTN_SET_SHARE = "✏️ Змінити частку"
+BTN_SHARE_AUTO = "🔄 Повернути автоматичну частку"
+BTN_REMOVE_MEMBER = "🚫 Видалити зі збору"
 
 # --- помилки -----------------------------------------------------------------
 
@@ -89,6 +107,10 @@ ERRORS: dict[ErrorCode, str] = {
     ),
     ErrorCode.POOL_FULL: f"У зборі вже максимум учасників ({MAX_MEMBERS}) 😔",
     ErrorCode.NOT_A_MEMBER: "Ти не береш участі в цьому зборі.",
+    ErrorCode.MEMBER_NOT_FOUND: "Цього учасника вже немає в зборі.",
+    ErrorCode.INVALID_SHARE: (
+        "Так не вийде: ручні частки разом не можуть перевищувати загальну суму збору."
+    ),
     ErrorCode.PAYMENT_NOT_FOUND: "Цей платіж не знайдено. Можливо, збір видалено.",
     ErrorCode.INVALID_TRANSITION: "Статус цього платежу вже змінився. Онови список.",
 }
@@ -406,3 +428,217 @@ def pool_status(status: PoolStatus) -> str:
 
 def statuses(items: Sequence[PoolStatus]) -> str:
     return "\n\n".join(pool_status(s) for s in items)
+
+
+# --- керування збором (власник) ------------------------------------------------
+
+SAVED = "Збережено ✅"
+EDIT_HINT = "\n\nСкасувати: /cancel або кнопка нижче."
+EXPECT_TEXT_INPUT = "Надішли нове значення текстом або натисни /cancel."
+EDIT_SESSION_EXPIRED = "Ця дія вже неактуальна. Відкрий збір ще раз: /my"
+NEXT_CYCLE_NOTE = "Діє з наступного списання: уже виставлені платежі не змінюються."
+
+
+def ask_new_amount(pool: Pool) -> str:
+    return (
+        f"Зараз загальна сума <b>{esc(pool.title)}</b>: {format_money(pool.total_amount_kop)}.\n"
+        f"Напиши нову суму на місяць у гривнях.\n<i>{NEXT_CYCLE_NOTE}</i>{EDIT_HINT}"
+    )
+
+
+def ask_new_day(pool: Pool) -> str:
+    return (
+        f"Зараз списання {billing_day_text(pool.billing_day)}.\n"
+        f"Напиши новий день від 1 до 31.{EDIT_HINT}"
+    )
+
+
+def ask_new_details(pool: Pool) -> str:
+    return f"Зараз реквізити: {esc(pool.payment_details)}\n\nНадішли нові реквізити.{EDIT_HINT}"
+
+
+def ask_member_share(pool: Pool, member: Member) -> str:
+    return (
+        f"Частка <b>{esc(member.user.display_name)}</b> зараз {format_money(member.share_kop)} "
+        f"із {format_money(pool.total_amount_kop)}.\n"
+        "Напиши нову частку в гривнях. Решта суми поділиться між іншими автоматично.\n"
+        f"<i>{NEXT_CYCLE_NOTE}</i>{EDIT_HINT}"
+    )
+
+
+def members_list(pool: Pool, members: Sequence[Member]) -> str:
+    if not members:
+        return f"У зборі <b>{esc(pool.title)}</b> поки немає учасників."
+    return (
+        f"<b>Учасники {esc(pool.title)}</b>\n"
+        "✏️ — частка задана вручну. Обери учасника, щоб змінити частку або видалити:"
+    )
+
+
+def member_card(member: Member) -> str:
+    custom = " (задана вручну ✏️)" if member.share_is_custom else " (автоматично)"
+    reach = "" if member.user.is_reachable else "\n⚠️ Бот заблоковано: повідомлення не доходять."
+    return (
+        f"🙋 <b>{esc(member.user.display_name)}</b>\n"
+        f"🧮 Частка: {format_money(member.share_kop)}{custom}{reach}"
+    )
+
+
+def confirm_remove_member(member: Member) -> str:
+    return (
+        f"Видалити <b>{esc(member.user.display_name)}</b> зі збору "
+        f"<b>{esc(member.pool.title)}</b>?\n"
+        "Його частку буде розподілено між іншими з наступного списання."
+    )
+
+
+def confirm_delete(pool: Pool) -> str:
+    return (
+        f"Точно видалити збір <b>{esc(pool.title)}</b>? 🗑\n\n"
+        "Усі учасники отримають сповіщення, а історію платежів буде видалено. "
+        "Скасувати це не можна."
+    )
+
+
+def pool_deleted(title: str) -> str:
+    return f"Збір <b>{esc(title)}</b> видалено."
+
+
+# Спливаючі вікна (callback alert): без HTML і не довші за 200 символів
+PAUSED_ALERT = (
+    "⏸ Збір на паузі. Нових платежів і нагадувань не буде, поки не відновиш. Учасників повідомлено."
+)
+
+
+def resumed_alert(next_billing: datetime) -> str:
+    return (
+        f"▶️ Збір відновлено. Наступне списання {short_date(next_billing)}. Учасників повідомлено."
+    )
+
+
+def invite_regenerated(pool: Pool, link: str) -> str:
+    return f"Старе посилання більше не працює.\n\n{invite_link(pool, link)}"
+
+
+def custom_shares_reset_note() -> str:
+    return "\n\n⚠️ Ручні частки більше не вміщалися в нову суму, тому їх скинуто на автоматичні."
+
+
+MARKED_PAID_ALERT = "Позначено оплаченим ✅ Учасника повідомлено."
+NO_UNPAID = "Усі платежі цього збору вже підтверджено ✅"
+
+
+def unpaid_list(pool: Pool) -> str:
+    return (
+        f"<b>Неоплачені платежі {esc(pool.title)}</b>\n"
+        "Натисни на платіж, щоб позначити його оплаченим (наприклад, якщо віддали готівкою)."
+    )
+
+
+def unpaid_button(payment: Payment) -> str:
+    icon = _STATUS_ICONS[payment.status]
+    return (
+        f"{icon} {payment.member.user.display_name} — {format_money(payment.amount_kop)} "
+        f"({MONTHS[payment.period.month - 1]})"
+    )
+
+
+def marked_paid_owner(payment: Payment) -> str:
+    return (
+        f"✅ Позначено оплаченим: {esc(payment.member.user.display_name)} — "
+        f"{format_money(payment.amount_kop)} ({period_name(payment.period)})."
+    )
+
+
+# --- сповіщення учасникам про дії власника -------------------------------------
+
+
+def member_share_changed(pool: Pool, old_kop: int, new_kop: int) -> str:
+    return (
+        f"🧮 У зборі <b>{esc(pool.title)}</b> змінився розподіл: твоя частка тепер "
+        f"<b>{format_money(new_kop)}</b> (було {format_money(old_kop)}).\n{NEXT_CYCLE_NOTE}"
+    )
+
+
+def member_day_changed(pool: Pool) -> str:
+    return (
+        f"📅 У зборі <b>{esc(pool.title)}</b> новий день списання: "
+        f"{billing_day_text(pool.billing_day)}."
+    )
+
+
+def member_details_changed(pool: Pool) -> str:
+    return (
+        f"💳 У зборі <b>{esc(pool.title)}</b> нові реквізити для оплати:\n"
+        f"{esc(pool.payment_details)}"
+    )
+
+
+def member_removed(pool: Pool) -> str:
+    return (
+        f"Власник видалив тебе зі збору <b>{esc(pool.title)}</b>. "
+        "Нагадувань про нього більше не буде."
+    )
+
+
+def member_pool_paused(pool: Pool) -> str:
+    return f"⏸ Збір <b>{esc(pool.title)}</b> поставлено на паузу. Поки що нічого скидати не треба."
+
+
+def member_pool_resumed(pool: Pool, next_billing: datetime) -> str:
+    return (
+        f"▶️ Збір <b>{esc(pool.title)}</b> знову активний. "
+        f"Наступне списання {short_date(next_billing)}."
+    )
+
+
+def member_pool_deleted(title: str) -> str:
+    return f"🗑 Власник видалив збір <b>{esc(title)}</b>. Більше нагадувань про нього не буде."
+
+
+def member_marked_paid(payment: Payment) -> str:
+    pool = payment.member.pool
+    return (
+        f"✅ {esc(pool.owner.display_name)} позначив(-ла) твою оплату "
+        f"{format_money(payment.amount_kop)} за <b>{esc(pool.title)}</b> "
+        f"({period_name(payment.period)}) як отриману. Дякую!"
+    )
+
+
+# --- дії учасника ----------------------------------------------------------------
+
+
+def confirm_leave(pool: Pool) -> str:
+    return (
+        f"Вийти зі збору <b>{esc(pool.title)}</b>?\n"
+        "Власник отримає сповіщення, а нагадування припиняться."
+    )
+
+
+def left_pool(pool: Pool) -> str:
+    return f"Ти вийшов(-ла) зі збору <b>{esc(pool.title)}</b> 👋"
+
+
+def owner_member_left(pool: Pool, member: Member) -> str:
+    return (
+        f"🚪 <b>{esc(member.user.display_name)}</b> вийшов(-ла) зі збору "
+        f"<b>{esc(pool.title)}</b>. Частки перераховано. {NEXT_CYCLE_NOTE}"
+    )
+
+
+_HISTORY_STATUS = {
+    PaymentStatus.PAID: "✅ оплачено",
+    PaymentStatus.CLAIMED: "⏳ чекає підтвердження",
+    PaymentStatus.PENDING: "❌ не оплачено",
+}
+
+
+def payment_history(member: Member, payments: Sequence[Payment]) -> str:
+    header = f"📜 <b>Історія платежів: {esc(member.pool.title)}</b>"
+    if not payments:
+        return f"{header}\n\nПлатежів ще не було."
+    lines = [
+        f"{period_name(p.period)} — {format_money(p.amount_kop)} · {_HISTORY_STATUS[p.status]}"
+        for p in payments
+    ]
+    return header + "\n\n" + "\n".join(lines)
