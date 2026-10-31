@@ -10,6 +10,7 @@
 `paid` — кінцевий статус.
 """
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -30,6 +31,8 @@ from bot.services.billing import (
     should_remind,
 )
 from bot.services.errors import DomainError, ErrorCode
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_TRANSITIONS: dict[PaymentStatus, frozenset[PaymentStatus]] = {
     PaymentStatus.PENDING: frozenset({PaymentStatus.CLAIMED, PaymentStatus.PAID}),
@@ -142,6 +145,8 @@ class PaymentService:
                 )
                 if is_new:
                     created.append(payment)
+        if created:
+            logger.info("Pool %s: created %s payment(s)", pool.id, len(created))
         return created
 
     # --- переходи статусів ---------------------------------------------------
@@ -155,8 +160,11 @@ class PaymentService:
     async def _transition(
         self, payment: Payment, target: PaymentStatus, now: datetime
     ) -> TransitionResult:
+        old = payment.status
         changed = apply_transition(payment, target, now)
         await self.payments.save(payment)
+        if changed:
+            logger.info("Payment %s: %s -> %s", payment.id, old.value, target.value)
         return TransitionResult(payment, changed)
 
     async def claim(self, payment_id: int, user: User, now: datetime) -> TransitionResult:

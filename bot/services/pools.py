@@ -1,5 +1,6 @@
 """Бізнес-логіка зборів: створення, приєднання, перерахунок часток. Без aiogram."""
 
+import logging
 import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from bot.services.validation import (
     validate_payment_details,
     validate_title,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_MEMBERS = 10
 _TOKEN_BYTES = 12  # → 16 символів base64url, вміщується в deep link (≤ 64)
@@ -100,7 +103,7 @@ class PoolService:
     async def create_pool(self, owner: User, data: NewPoolData) -> Pool:
         if data.total_amount_kop <= 0:
             raise DomainError(ErrorCode.INVALID_AMOUNT)
-        return await self.pools.create(
+        pool = await self.pools.create(
             owner_id=owner.id,
             title=validate_title(data.title),
             total_amount_kop=data.total_amount_kop,
@@ -109,6 +112,8 @@ class PoolService:
             payment_details=validate_payment_details(data.payment_details),
             invite_token=await self._new_invite_token(),
         )
+        logger.info("Pool %s created by user %s", pool.id, owner.id)
+        return pool
 
     async def _new_invite_token(self) -> str:
         for _ in range(_TOKEN_ATTEMPTS):
@@ -169,6 +174,7 @@ class PoolService:
 
         await self.recalculate_shares(pool)
         count = await self.members.count_active(pool.id)
+        logger.info("User %s %s pool %s (%s members)", user.id, status.value, pool.id, count)
         return JoinResult(status, pool, member, count)
 
     # --- частки ------------------------------------------------------------
@@ -272,6 +278,7 @@ class PoolService:
         member = await self.get_active_member(pool, member_id)
         await self.members.set_active(member, False)
         update = await self._recalculate_with_changes(pool)
+        logger.info("Member %s removed from pool %s by owner", member.id, pool.id)
         return MemberRemoval(pool, member, update.changes)
 
     async def set_paused(self, pool_id: int, owner: User, paused: bool, now: datetime) -> Pool:
@@ -283,6 +290,7 @@ class PoolService:
         fields: dict[str, object] = {"is_paused": paused}
         if not paused:
             fields["active_since"] = now
+        logger.info("Pool %s %s", pool.id, "paused" if paused else "resumed")
         return await self.pools.update(pool, **fields)
 
     async def delete_pool(self, pool_id: int, owner: User) -> DeletedPool:
@@ -290,6 +298,7 @@ class PoolService:
         users = [m.user for m in await self.members.list_active(pool.id)]
         deleted = DeletedPool(pool.title, users)
         await self.pools.delete(pool)
+        logger.info("Pool %s deleted by owner %s", pool_id, owner.id)
         return deleted
 
     # --- дії учасника --------------------------------------------------------
@@ -299,6 +308,7 @@ class PoolService:
         pool = member.pool
         await self.members.set_active(member, False)
         update = await self._recalculate_with_changes(pool)
+        logger.info("Member %s left pool %s", member.id, pool.id)
         return MemberRemoval(pool, member, update.changes)
 
     # --- допоміжне -----------------------------------------------------------

@@ -7,12 +7,14 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from bot import texts
 from bot.config import Settings, get_settings
 from bot.db.session import create_engine, create_session_factory
 from bot.handlers import get_root_router
+from bot.handlers.errors import on_error
 from bot.middlewares import DbSessionMiddleware, UserMiddleware
 from bot.scheduler import BillingJob, create_scheduler
 
@@ -26,6 +28,9 @@ def setup_logging(level: str) -> None:
         level=level.upper(),
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
+    # Сторонні бібліотеки балакучі на INFO: лишаємо їм лише попередження
+    for noisy in ("aiogram.event", "apscheduler", "sqlalchemy.engine"):
+        logging.getLogger(noisy).setLevel(max(logging.WARNING, logging.getLogger().level))
 
 
 def create_dispatcher(
@@ -39,6 +44,7 @@ def create_dispatcher(
     dp = Dispatcher(storage=MemoryStorage(), tz=tz, billing_hour=billing_hour)
     dp.update.outer_middleware(DbSessionMiddleware(session_factory))
     dp.update.outer_middleware(UserMiddleware())
+    dp.errors.register(on_error)
     dp.include_router(get_root_router())
     return dp
 
@@ -73,7 +79,12 @@ async def main(settings: Settings) -> None:
 
 
 def run() -> None:
-    settings = get_settings()
+    try:
+        settings = get_settings()
+    except ValidationError as exc:
+        setup_logging("INFO")
+        logger.critical("Помилка конфігурації, перевір .env:\n%s", exc)
+        raise SystemExit(1) from None
     setup_logging(settings.log_level)
     try:
         asyncio.run(main(settings))
