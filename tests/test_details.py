@@ -69,7 +69,7 @@ def test_ukrainian_iban_is_copied_whole(iban: str) -> None:
 )
 def test_long_digit_runs_are_not_partially_wrapped(details: str) -> None:
     html = format_details_html(details)
-    assert "<code>" not in html or html.count("<code>") == 1 and "</code>" in html
+    assert "<code>" not in html or (html.count("<code>") == 1 and "</code>" in html)
     # Головне: ніколи не обгортати лише частину суцільного ряду цифр
     if "<code>" in html:
         inner = html.split("<code>")[1].split("</code>")[0]
