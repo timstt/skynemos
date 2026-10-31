@@ -58,9 +58,10 @@ async def test_pool_create_and_lookup(
     assert [p.id for p in await repo.list_by_owner(owner.id)] == [pool.id]
 
 
-async def test_pool_without_owner_share(make_pool: MakePool) -> None:
+async def test_pool_without_owner_starts_with_full_owner_share(make_pool: MakePool) -> None:
+    # Поки учасників немає, усю суму покриває власник, навіть якщо він не в розподілі
     pool = await make_pool(include_owner=False)
-    assert pool.owner_share_kop == 0
+    assert pool.owner_share_kop == 30_000
 
 
 async def test_list_active_skips_paused(session: AsyncSession, make_pool: MakePool) -> None:

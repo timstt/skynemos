@@ -29,7 +29,8 @@ class PoolRepository:
             total_amount_kop=total_amount_kop,
             billing_day=billing_day,
             include_owner=include_owner,
-            owner_share_kop=total_amount_kop if include_owner else 0,
+            # Учасників ще немає, тож усю суму поки що покриває власник
+            owner_share_kop=total_amount_kop,
             payment_details=payment_details,
             invite_token=invite_token,
         )

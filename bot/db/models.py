@@ -85,7 +85,8 @@ class Pool(Base):
     total_amount_kop: Mapped[int] = mapped_column(Integer, nullable=False)
     billing_day: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     include_owner: Mapped[bool] = mapped_column(default=True, server_default=true())
-    # Частка власника, якщо він у розподілі (інакше 0). Власник не є рядком у members.
+    # Сума, яку фактично покриває власник: його частка, якщо він у розподілі, плюс
+    # невкрита учасниками решта. Власник не є рядком у members.
     owner_share_kop: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     payment_details: Mapped[str] = mapped_column(Text, nullable=False)
     invite_token: Mapped[str] = mapped_column(
