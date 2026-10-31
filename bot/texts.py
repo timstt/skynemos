@@ -123,6 +123,30 @@ def error_text(error: DomainError) -> str:
     return ERRORS.get(error.code, "Щось пішло не так. Спробуй ще раз.")
 
 
+# --- імена користувачів ----------------------------------------------------------
+
+
+def mention(user: User) -> str:
+    """Клікабельне ім'я: з username відкриває чат (t.me/…), без нього — профіль за id.
+
+    Поруч показуємо @username, щоб людину було легко впізнати навіть з ім'ям «.».
+    Посилання за id відкривається, лише якщо налаштування приватності користувача це дозволяють.
+    """
+    name = esc(user.display_name)
+    if user.username:
+        link = f'<a href="https://t.me/{esc(user.username)}">{name}</a>'
+        # display_name уже дорівнює @username, якщо імені немає: не дублюємо
+        return f"{link} (@{esc(user.username)})" if user.first_name else link
+    return f'<a href="tg://user?id={user.telegram_id}">{name}</a>'
+
+
+def plain_name(user: User) -> str:
+    """Ім'я для кнопок і спливаючих вікон, де посилання неможливі."""
+    if user.username and user.first_name:
+        return f"{user.first_name} @{user.username}"
+    return user.display_name
+
+
 # --- створення збору ---------------------------------------------------------
 
 ASK_TITLE = (
@@ -180,7 +204,7 @@ def join_preview(preview: JoinPreview) -> str:
     pool = preview.pool
     owner_note = "" if pool.include_owner else "\n<i>Власник у розподілі не бере участі.</i>"
     return (
-        f"<b>{esc(pool.owner.display_name)}</b> запрошує тебе до збору "
+        f"<b>{mention(pool.owner)}</b> запрошує тебе до збору "
         f"<b>{esc(pool.title)}</b> 💸\n\n"
         f"💰 Загальна сума: {format_money(pool.total_amount_kop)} на місяць\n"
         f"📅 Списання: {billing_day_text(pool.billing_day)}\n"
@@ -209,7 +233,7 @@ def joined(result: JoinResult) -> str:
 
 def owner_member_joined(result: JoinResult, member_user: User) -> str:
     return (
-        f"🙋 <b>{esc(member_user.display_name)}</b> приєднався(-лася) до збору "
+        f"🙋 <b>{mention(member_user)}</b> приєднався(-лася) до збору "
         f"<b>{esc(result.pool.title)}</b>.\n"
         f"Учасників: {result.members_count}/{MAX_MEMBERS}. "
         "Нові частки діють з наступного списання."
@@ -254,9 +278,7 @@ def owner_pool_card(pool: Pool, members: Sequence[Member]) -> str:
     for member in members:
         mark = "" if member.user.is_reachable else " ⚠️ недоступний"
         custom = " ✏️" if member.share_is_custom else ""
-        lines.append(
-            f"• {esc(member.user.display_name)} — {format_money(member.share_kop)}{custom}{mark}"
-        )
+        lines.append(f"• {mention(member.user)} — {format_money(member.share_kop)}{custom}{mark}")
     if not members:
         lines.append("<i>Поки нікого. Надішли друзям посилання-запрошення.</i>")
     return "\n".join(lines)
@@ -266,7 +288,7 @@ def member_pool_card(member: Member) -> str:
     pool = member.pool
     lines = _pool_header(pool)
     lines += [
-        f"👑 Власник: {esc(pool.owner.display_name)}",
+        f"👑 Власник: {mention(pool.owner)}",
         f"🧮 Твоя частка: <b>{format_money(member.share_kop)}</b>",
         f"💳 Реквізити: {esc(pool.payment_details)}",
     ]
@@ -305,7 +327,7 @@ def _payment_body(payment: Payment) -> str:
     return (
         f"📌 <b>{esc(pool.title)}</b> — {period_name(payment.period)}\n"
         f"💰 Твоя частка: <b>{format_money(payment.amount_kop)}</b>\n"
-        f"👑 Отримувач: {esc(pool.owner.display_name)}\n"
+        f"👑 Отримувач: {mention(pool.owner)}\n"
         f"💳 Реквізити: {esc(pool.payment_details)}"
     )
 
@@ -331,7 +353,7 @@ def payment_claimed_member(payment: Payment) -> str:
 def owner_claim(payment: Payment) -> str:
     member = payment.member
     return (
-        f"💸 <b>{esc(member.user.display_name)}</b> каже, що скинув(-ла) "
+        f"💸 <b>{mention(member.user)}</b> каже, що скинув(-ла) "
         f"<b>{format_money(payment.amount_kop)}</b> за <b>{esc(member.pool.title)}</b> "
         f"({period_name(payment.period)}).\n\nПеревір надходження і підтверди."
     )
@@ -350,7 +372,7 @@ def owner_rejected(payment: Payment) -> str:
 def member_confirmed(payment: Payment) -> str:
     pool = payment.member.pool
     return (
-        f"✅ {esc(pool.owner.display_name)} підтвердив(-ла) твою оплату "
+        f"✅ {mention(pool.owner)} підтвердив(-ла) твою оплату "
         f"{format_money(payment.amount_kop)} за <b>{esc(pool.title)}</b> "
         f"({period_name(payment.period)}). Дякую!"
     )
@@ -358,7 +380,7 @@ def member_confirmed(payment: Payment) -> str:
 
 def member_rejected(payment: Payment) -> str:
     return (
-        f"🤔 {esc(payment.member.pool.owner.display_name)} поки не бачить твоєї оплати.\n\n"
+        f"🤔 {mention(payment.member.pool.owner)} поки не бачить твоєї оплати.\n\n"
         f"{_payment_body(payment)}\n\n"
         "Перевір переказ. Якщо все гаразд, натисни кнопку ще раз."
     )
@@ -367,7 +389,7 @@ def member_rejected(payment: Payment) -> str:
 def owner_member_unreachable(payment: Payment) -> str:
     member = payment.member
     return (
-        f"⚠️ Не можу написати <b>{esc(member.user.display_name)}</b> "
+        f"⚠️ Не можу написати <b>{mention(member.user)}</b> "
         f"(збір <b>{esc(member.pool.title)}</b>): схоже, бота заблоковано. "
         f"Нагадай, будь ласка, сам(-а): {format_money(payment.amount_kop)} "
         f"за {period_name(payment.period)}."
@@ -393,7 +415,7 @@ _STATUS_ICONS = {
 def _status_line(payment: Payment) -> str:
     member = payment.member
     line = (
-        f"{_STATUS_ICONS[payment.status]} {esc(member.user.display_name)} — "
+        f"{_STATUS_ICONS[payment.status]} {mention(member.user)} — "
         f"{format_money(payment.amount_kop)}"
     )
     if payment.status is PaymentStatus.CLAIMED:
@@ -414,8 +436,7 @@ def pool_status(status: PoolStatus) -> str:
         header = f"📌 <b>{esc(pool.title)}</b> — {period_name(status.period)}"
         lines = [_status_line(p) for p in status.payments]
         lines += [
-            f"🆕 {esc(m.user.display_name)} — платить з наступного місяця"
-            for m in status.not_billed_yet
+            f"🆕 {mention(m.user)} — платить з наступного місяця" for m in status.not_billed_yet
         ]
         if not lines:
             lines.append("<i>Цього місяця платежів немає.</i>")
@@ -462,7 +483,7 @@ def ask_new_details(pool: Pool) -> str:
 
 def ask_member_share(pool: Pool, member: Member) -> str:
     return (
-        f"Частка <b>{esc(member.user.display_name)}</b> зараз {format_money(member.share_kop)} "
+        f"Частка <b>{mention(member.user)}</b> зараз {format_money(member.share_kop)} "
         f"із {format_money(pool.total_amount_kop)}.\n"
         "Напиши нову частку в гривнях. Решта суми поділиться між іншими автоматично.\n"
         f"<i>{NEXT_CYCLE_NOTE}</i>{EDIT_HINT}"
@@ -482,14 +503,14 @@ def member_card(member: Member) -> str:
     custom = " (задана вручну ✏️)" if member.share_is_custom else " (автоматично)"
     reach = "" if member.user.is_reachable else "\n⚠️ Бот заблоковано: повідомлення не доходять."
     return (
-        f"🙋 <b>{esc(member.user.display_name)}</b>\n"
+        f"🙋 <b>{mention(member.user)}</b>\n"
         f"🧮 Частка: {format_money(member.share_kop)}{custom}{reach}"
     )
 
 
 def confirm_remove_member(member: Member) -> str:
     return (
-        f"Видалити <b>{esc(member.user.display_name)}</b> зі збору "
+        f"Видалити <b>{mention(member.user)}</b> зі збору "
         f"<b>{esc(member.pool.title)}</b>?\n"
         "Його частку буде розподілено між іншими з наступного списання."
     )
@@ -541,14 +562,14 @@ def unpaid_list(pool: Pool) -> str:
 def unpaid_button(payment: Payment) -> str:
     icon = _STATUS_ICONS[payment.status]
     return (
-        f"{icon} {payment.member.user.display_name} — {format_money(payment.amount_kop)} "
+        f"{icon} {plain_name(payment.member.user)} — {format_money(payment.amount_kop)} "
         f"({MONTHS[payment.period.month - 1]})"
     )
 
 
 def marked_paid_owner(payment: Payment) -> str:
     return (
-        f"✅ Позначено оплаченим: {esc(payment.member.user.display_name)} — "
+        f"✅ Позначено оплаченим: {mention(payment.member.user)} — "
         f"{format_money(payment.amount_kop)} ({period_name(payment.period)})."
     )
 
@@ -602,7 +623,7 @@ def member_pool_deleted(title: str) -> str:
 def member_marked_paid(payment: Payment) -> str:
     pool = payment.member.pool
     return (
-        f"✅ {esc(pool.owner.display_name)} позначив(-ла) твою оплату "
+        f"✅ {mention(pool.owner)} позначив(-ла) твою оплату "
         f"{format_money(payment.amount_kop)} за <b>{esc(pool.title)}</b> "
         f"({period_name(payment.period)}) як отриману. Дякую!"
     )
@@ -624,7 +645,7 @@ def left_pool(pool: Pool) -> str:
 
 def owner_member_left(pool: Pool, member: Member) -> str:
     return (
-        f"🚪 <b>{esc(member.user.display_name)}</b> вийшов(-ла) зі збору "
+        f"🚪 <b>{mention(member.user)}</b> вийшов(-ла) зі збору "
         f"<b>{esc(pool.title)}</b>. Частки перераховано. {NEXT_CYCLE_NOTE}"
     )
 

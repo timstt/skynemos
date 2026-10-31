@@ -52,7 +52,8 @@ def create_dispatcher(
 async def main(settings: Settings) -> None:
     bot = Bot(
         token=settings.bot_token.get_secret_value(),
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        # Без прев'ю посилань: інакше під кожним повідомленням з t.me/username картка профілю
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True),
     )
     engine = create_engine(settings.database_url)
     session_factory = create_session_factory(engine)

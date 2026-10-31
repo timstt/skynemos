@@ -108,9 +108,9 @@ async def test_status_shows_each_member(harness: Harness) -> None:
     await harness.send(OWNER, "/status")
 
     status = harness.api.texts_to(OWNER["id"])[-1]
-    assert "✅ Оля — 100 грн" in status
-    assert "⏳ Учасник2 — 100 грн (чекає підтвердження)" in status
-    assert "❌ Учасник3 — 100 грн" in status
+    assert '✅ <a href="tg://user?id=222">Оля</a> — 100 грн' in status
+    assert "Учасник2</a> — 100 грн (чекає підтвердження)" in status
+    assert '❌ <a href="tg://user?id=224">Учасник3</a> — 100 грн' in status
     assert "Зібрано: 100 грн з 300 грн" in status
 
 

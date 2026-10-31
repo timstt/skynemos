@@ -53,7 +53,7 @@ async def test_full_create_and_join_flow(harness: Harness, engine: AsyncEngine) 
     )
     await harness.click(OWNER, PoolCB(action=PoolAction.VIEW, pool_id=pool.id).pack())
     card = harness.api.texts_to(OWNER["id"])[-1]
-    assert "Оля — 150 грн" in card and "Ти — 150 грн" in card
+    assert '<a href="tg://user?id=222">Оля</a> — 150 грн' in card and "Ти — 150 грн" in card
 
     await harness.click(GUEST, PoolCB(action=PoolAction.VIEW, pool_id=pool.id).pack())
     assert "Твоя частка: <b>150 грн</b>" in harness.api.texts_to(GUEST["id"])[-1]

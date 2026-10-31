@@ -104,7 +104,7 @@ def members_kb(pool: Pool, members: Sequence[Member]) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for member in members:
         kb.button(
-            text=f"{member.user.display_name} — {format_money(member.share_kop)}",
+            text=f"{texts.plain_name(member.user)} — {format_money(member.share_kop)}",
             callback_data=MemberCB(action=MemberAction.VIEW, pool_id=pool.id, member_id=member.id),
         )
     _pool_btn(kb, texts.BTN_BACK, PoolAction.VIEW, pool.id)
