@@ -1,6 +1,6 @@
 # Скинемось 💸
 
-[![CI](https://github.com/<your-username>/skynemos/actions/workflows/ci.yml/badge.svg)](https://github.com/<your-username>/skynemos/actions/workflows/ci.yml)
+[![CI](https://github.com/timstt/skynemos/actions/workflows/ci.yml/badge.svg)](https://github.com/timstt/skynemos/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 ![aiogram](https://img.shields.io/badge/aiogram-3.x-2CA5E0)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791)
