@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-skynemos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-skynemos}
+      POSTGRES_DB: ${POSTGRES_DB:-skynemos}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-skynemos}:${POSTGRES_PASSWORD:-skynemos}@db:5432/${POSTGRES_DB:-skynemos}
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
