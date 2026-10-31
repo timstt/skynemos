@@ -21,7 +21,9 @@ from sqlalchemy import (
     func,
     true,
 )
+from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 # Стабільні імена обмежень, щоб Alembic-міграції були передбачуваними
 NAMING_CONVENTION = {
@@ -52,11 +54,32 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+class UTCDateTime(TypeDecorator[datetime]):
+    """`timestamptz`, що завжди пише UTC і завжди повертає datetime з поясом.
+
+    Postgres і так зберігає момент часу, а SQLite (тести) відкидає пояс:
+    київські 10:00 повернулися б як 10:00 UTC. Нормалізація до UTC прибирає різницю.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("Naive datetime is not allowed, use an aware one (UTC)")
+        return value.astimezone(UTC)
+
+    def process_result_value(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+
 def _now_column() -> Mapped[datetime]:
     # Python-дефолт: значення відоме одразу й однакове для Postgres і SQLite (тести)
-    return mapped_column(
-        DateTime(timezone=True), default=utcnow, server_default=func.now(), nullable=False
-    )
+    return mapped_column(UTCDateTime(), default=utcnow, server_default=func.now(), nullable=False)
 
 
 class User(Base):
@@ -173,10 +196,12 @@ class Payment(Base):
         server_default=PaymentStatus.PENDING.value,
         index=True,
     )
+    # Коли учаснику надіслано запит «скинь»; NULL — ще не доставлено (буде повтор)
+    notified_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     reminders_sent: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
-    last_reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_reminded_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_at: Mapped[datetime] = _now_column()
-    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    paid_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
     member: Mapped[Member] = relationship(back_populates="payments")

@@ -27,3 +27,14 @@ class PoolAction(StrEnum):
 class PoolCB(CallbackData, prefix="pool"):
     action: PoolAction
     pool_id: int = 0
+
+
+class PaymentAction(StrEnum):
+    CLAIM = "claim"
+    CONFIRM = "confirm"
+    REJECT = "reject"
+
+
+class PaymentCB(CallbackData, prefix="pay"):
+    action: PaymentAction
+    payment_id: int

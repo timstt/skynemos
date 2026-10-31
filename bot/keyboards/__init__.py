@@ -9,6 +9,8 @@ from bot.keyboards.callbacks import (
     JoinCB,
     NewPoolAction,
     NewPoolCB,
+    PaymentAction,
+    PaymentCB,
     PoolAction,
     PoolCB,
 )
@@ -80,4 +82,27 @@ def open_pool_kb(pool_id: int) -> InlineKeyboardMarkup:
     kb.button(
         text=texts.BTN_OPEN_POOL, callback_data=PoolCB(action=PoolAction.VIEW, pool_id=pool_id)
     )
+    return kb.as_markup()
+
+
+def payment_request_kb(payment_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text=texts.BTN_CLAIM,
+        callback_data=PaymentCB(action=PaymentAction.CLAIM, payment_id=payment_id),
+    )
+    return kb.as_markup()
+
+
+def owner_claim_kb(payment_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text=texts.BTN_CONFIRM,
+        callback_data=PaymentCB(action=PaymentAction.CONFIRM, payment_id=payment_id),
+    )
+    kb.button(
+        text=texts.BTN_REJECT,
+        callback_data=PaymentCB(action=PaymentAction.REJECT, payment_id=payment_id),
+    )
+    kb.adjust(2)
     return kb.as_markup()

@@ -1,16 +1,22 @@
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
+from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.pool import StaticPool
 
+from bot.__main__ import create_dispatcher
 from bot.db.models import Base, Pool, User
 from bot.db.repositories import PoolRepository, UserRepository
 from bot.db.session import create_engine, create_session_factory
+from bot.handlers import get_root_router
+from tests.fakes import FakeSession, Harness
 
 MakeUser = Callable[..., Awaitable[User]]
 MakePool = Callable[..., Awaitable[Pool]]
+KYIV = ZoneInfo("Europe/Kyiv")
 
 
 @pytest.fixture
@@ -57,3 +63,21 @@ def make_pool(session: AsyncSession, make_user: MakeUser) -> MakePool:
         return await PoolRepository(session).create(owner_id=owner.id, **fields)
 
     return _make
+
+
+@pytest.fixture
+def api() -> FakeSession:
+    return FakeSession()
+
+
+@pytest.fixture
+def bot(api: FakeSession) -> Bot:
+    return Bot("42:TEST", session=api)
+
+
+@pytest.fixture
+async def harness(engine: AsyncEngine, bot: Bot, api: FakeSession) -> AsyncIterator[Harness]:
+    dp = create_dispatcher(create_session_factory(engine), tz=KYIV, billing_hour=10)
+    yield Harness(dp, bot, api, engine)
+    # Роутери — модульні синглтони: від'єднуємо, щоб наступний тест підключив їх знову
+    get_root_router()._parent_router = None

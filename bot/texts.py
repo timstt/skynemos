@@ -4,11 +4,13 @@
 """
 
 from collections.abc import Sequence
+from datetime import date, datetime
 from html import escape as esc
 
-from bot.db.models import Member, Pool, User
+from bot.db.models import Member, Payment, PaymentStatus, Pool, User
 from bot.services.errors import DomainError, ErrorCode
 from bot.services.money import format_money
+from bot.services.payments import PoolStatus
 from bot.services.pools import MAX_MEMBERS, JoinPreview, JoinResult, JoinStatus, NewPoolData
 
 # --- загальне ----------------------------------------------------------------
@@ -63,6 +65,9 @@ BTN_INVITE_LINK = "🔗 Посилання-запрошення"
 BTN_BACK_TO_LIST = "⬅️ До списку зборів"
 BTN_BACK = "⬅️ Назад"
 BTN_OPEN_POOL = "Відкрити збір"
+BTN_CLAIM = "Я скинув ✅"
+BTN_CONFIRM = "✅ Підтвердити"
+BTN_REJECT = "❌ Не бачу оплати"
 
 # --- помилки -----------------------------------------------------------------
 
@@ -248,3 +253,156 @@ def invite_link(pool: Pool, link: str) -> str:
         f"🔗 Посилання-запрошення до <b>{esc(pool.title)}</b>:\n\n{link}\n\n"
         "Перешли його тим, хто має скидатися."
     )
+
+
+# --- платежі -------------------------------------------------------------------
+
+MONTHS = (
+    "січень", "лютий", "березень", "квітень", "травень", "червень",
+    "липень", "серпень", "вересень", "жовтень", "листопад", "грудень",
+)  # fmt: skip
+MONTHS_GENITIVE = (
+    "січня", "лютого", "березня", "квітня", "травня", "червня",
+    "липня", "серпня", "вересня", "жовтня", "листопада", "грудня",
+)  # fmt: skip
+
+
+def period_name(period: date) -> str:
+    return f"{MONTHS[period.month - 1]} {period.year}"
+
+
+def short_date(moment: datetime) -> str:
+    return f"{moment.day} {MONTHS_GENITIVE[moment.month - 1]}"
+
+
+def _payment_body(payment: Payment) -> str:
+    pool = payment.member.pool
+    return (
+        f"📌 <b>{esc(pool.title)}</b> — {period_name(payment.period)}\n"
+        f"💰 Твоя частка: <b>{format_money(payment.amount_kop)}</b>\n"
+        f"👑 Отримувач: {esc(pool.owner.display_name)}\n"
+        f"💳 Реквізити: {esc(pool.payment_details)}"
+    )
+
+
+def payment_request(payment: Payment) -> str:
+    return (
+        f"Час скинутися 💸\n\n{_payment_body(payment)}\n\n"
+        "Коли переведеш гроші, натисни кнопку нижче."
+    )
+
+
+def payment_reminder(payment: Payment) -> str:
+    return (
+        f"Нагадую 🙂 Схоже, за цей місяць ще не скинуто.\n\n{_payment_body(payment)}\n\n"
+        "Якщо вже переказав(-ла), натисни кнопку, щоб власник перевірив."
+    )
+
+
+def payment_claimed_member(payment: Payment) -> str:
+    return f"{_payment_body(payment)}\n\n⏳ Дякую! Чекаємо, поки власник підтвердить оплату."
+
+
+def owner_claim(payment: Payment) -> str:
+    member = payment.member
+    return (
+        f"💸 <b>{esc(member.user.display_name)}</b> каже, що скинув(-ла) "
+        f"<b>{format_money(payment.amount_kop)}</b> за <b>{esc(member.pool.title)}</b> "
+        f"({period_name(payment.period)}).\n\nПеревір надходження і підтверди."
+    )
+
+
+def owner_confirmed(payment: Payment) -> str:
+    return f"{owner_claim(payment)}\n\n✅ Підтверджено."
+
+
+def owner_rejected(payment: Payment) -> str:
+    return (
+        f"{owner_claim(payment)}\n\n↩️ Ти позначив(-ла), що оплати не видно. Учасника повідомлено."
+    )
+
+
+def member_confirmed(payment: Payment) -> str:
+    pool = payment.member.pool
+    return (
+        f"✅ {esc(pool.owner.display_name)} підтвердив(-ла) твою оплату "
+        f"{format_money(payment.amount_kop)} за <b>{esc(pool.title)}</b> "
+        f"({period_name(payment.period)}). Дякую!"
+    )
+
+
+def member_rejected(payment: Payment) -> str:
+    return (
+        f"🤔 {esc(payment.member.pool.owner.display_name)} поки не бачить твоєї оплати.\n\n"
+        f"{_payment_body(payment)}\n\n"
+        "Перевір переказ. Якщо все гаразд, натисни кнопку ще раз."
+    )
+
+
+def owner_member_unreachable(payment: Payment) -> str:
+    member = payment.member
+    return (
+        f"⚠️ Не можу написати <b>{esc(member.user.display_name)}</b> "
+        f"(збір <b>{esc(member.pool.title)}</b>): схоже, бота заблоковано. "
+        f"Нагадай, будь ласка, сам(-а): {format_money(payment.amount_kop)} "
+        f"за {period_name(payment.period)}."
+    )
+
+
+ALREADY_CLAIMED = "Ти вже позначив(-ла) оплату. Чекаємо підтвердження ⏳"
+ALREADY_PAID = "Оплату вже підтверджено ✅"
+ALREADY_REJECTED = "Ти вже позначив(-ла), що оплати не видно."
+
+
+# --- /status -----------------------------------------------------------------
+
+STATUS_NO_POOLS = "У тебе немає зборів, де ти власник. Створи свій через /new."
+
+_STATUS_ICONS = {
+    PaymentStatus.PAID: "✅",
+    PaymentStatus.CLAIMED: "⏳",
+    PaymentStatus.PENDING: "❌",
+}
+
+
+def _status_line(payment: Payment) -> str:
+    member = payment.member
+    line = (
+        f"{_STATUS_ICONS[payment.status]} {esc(member.user.display_name)} — "
+        f"{format_money(payment.amount_kop)}"
+    )
+    if payment.status is PaymentStatus.CLAIMED:
+        line += " (чекає підтвердження)"
+    if not member.is_active:
+        line += " · вийшов(-ла) зі збору"
+    elif not member.user.is_reachable:
+        line += " · ⚠️ бот заблоковано"
+    return line
+
+
+def pool_status(status: PoolStatus) -> str:
+    pool = status.pool
+    if status.period is None:
+        header = f"📌 <b>{esc(pool.title)}</b>"
+        body = f"Перше списання {short_date(status.next_billing)}."
+    else:
+        header = f"📌 <b>{esc(pool.title)}</b> — {period_name(status.period)}"
+        lines = [_status_line(p) for p in status.payments]
+        lines += [
+            f"🆕 {esc(m.user.display_name)} — платить з наступного місяця"
+            for m in status.not_billed_yet
+        ]
+        if not lines:
+            lines.append("<i>Цього місяця платежів немає.</i>")
+        if status.payments:
+            lines.append(
+                f"\nЗібрано: {format_money(status.paid_kop)} з {format_money(status.expected_kop)}"
+            )
+        body = "\n".join(lines)
+    if pool.is_paused:
+        header += "\n⏸ <i>на паузі</i>"
+    return f"{header}\n{body}"
+
+
+def statuses(items: Sequence[PoolStatus]) -> str:
+    return "\n\n".join(pool_status(s) for s in items)

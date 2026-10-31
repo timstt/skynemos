@@ -96,6 +96,19 @@ class PaymentRepository:
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
+    async def list_unnotified_pending(self) -> Sequence[Payment]:
+        """Платежі pending, про які учасник ще не отримав повідомлення."""
+        result = await self.session.execute(
+            select(Payment)
+            .where(Payment.status == PaymentStatus.PENDING, Payment.notified_at.is_(None))
+            .options(
+                selectinload(Payment.member).selectinload(Member.user),
+                selectinload(Payment.member).selectinload(Member.pool).selectinload(Pool.owner),
+            )
+            .order_by(Payment.id)
+        )
+        return result.scalars().all()
+
     async def save(self, payment: Payment) -> Payment:
         await self.session.flush()
         return payment

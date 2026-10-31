@@ -32,11 +32,6 @@ async def cmd_my(message: Message, session: AsyncSession, user: User) -> None:
     await message.answer(text, reply_markup=kb)
 
 
-@router.message(Command("status"))
-async def cmd_status(message: Message) -> None:
-    await message.answer(texts.NOT_IMPLEMENTED)
-
-
 @router.callback_query(PoolCB.filter(F.action == PoolAction.LIST))
 async def show_list(callback: CallbackQuery, session: AsyncSession, user: User) -> None:
     text, kb = await _pools_list(session, user)

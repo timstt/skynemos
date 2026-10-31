@@ -18,9 +18,17 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.db.models import Payment, PaymentStatus, Pool, User
+from bot.db.models import Member, Payment, PaymentStatus, Pool, User
 from bot.db.repositories import MemberRepository, PaymentRepository, PoolRepository
-from bot.services.billing import billing_moment, due_periods, ensure_aware, reminders_due
+from bot.services.billing import (
+    add_months,
+    billing_moment,
+    due_periods,
+    ensure_aware,
+    latest_due_period,
+    reminders_due,
+    should_remind,
+)
 from bot.services.errors import DomainError, ErrorCode
 
 ALLOWED_TRANSITIONS: dict[PaymentStatus, frozenset[PaymentStatus]] = {
@@ -36,6 +44,25 @@ class PaidVia(StrEnum):
     OWNER_CONFIRMED = "owner_confirmed"  # власник підтвердив «Я скинув»
     OWNER_MANUAL = "owner_manual"  # власник позначив сам (готівка тощо)
     BANK = "bank"
+
+
+@dataclass(frozen=True, slots=True)
+class PoolStatus:
+    """Стан збору за останній період, що настав (для /status)."""
+
+    pool: Pool
+    period: date | None  # None — перше списання ще не настало
+    payments: Sequence[Payment]
+    not_billed_yet: Sequence[Member]  # приєдналися після списання: платять з наступного
+    next_billing: datetime
+
+    @property
+    def paid_kop(self) -> int:
+        return sum(p.amount_kop for p in self.payments if p.status is PaymentStatus.PAID)
+
+    @property
+    def expected_kop(self) -> int:
+        return sum(p.amount_kop for p in self.payments)
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,7 +206,55 @@ class PaymentService:
         payment.last_reminded_at = now
         await self.payments.save(payment)
 
+    async def payments_to_remind(self, now: datetime) -> list[tuple[Payment, datetime]]:
+        """Неоплачені платежі, яким зараз час нагадати, разом з моментом списання."""
+        result: list[tuple[Payment, datetime]] = []
+        for payment in await self.payments.list_by_status(PaymentStatus.PENDING):
+            if payment.notified_at is None or not self._deliverable(payment):
+                continue
+            moment = self.billing_moment(payment.member.pool, payment.period)
+            # Сам запит «скинь» теж рахується: щойно доставлений не доганяємо нагадуванням
+            last_contact = max(
+                (ensure_aware(t) for t in (payment.last_reminded_at, payment.notified_at) if t),
+                default=None,
+            )
+            if should_remind(moment, now, payment.reminders_sent, last_contact, self.tz):
+                result.append((payment, moment))
+        return result
+
+    # --- доставка запитів «скинь» --------------------------------------------
+
+    async def payments_to_notify(self) -> list[Payment]:
+        """Платежі, про які учасник ще не отримав повідомлення (і може його отримати)."""
+        return [p for p in await self.payments.list_unnotified_pending() if self._deliverable(p)]
+
+    async def mark_notified(self, payment: Payment, now: datetime) -> None:
+        payment.notified_at = now
+        await self.payments.save(payment)
+
+    @staticmethod
+    def _deliverable(payment: Payment) -> bool:
+        member = payment.member
+        return member.is_active and member.user.is_reachable and not member.pool.is_paused
+
     # --- перегляд ------------------------------------------------------------
 
     async def list_for_pool_period(self, pool: Pool, period: date) -> Sequence[Payment]:
         return await self.payments.list_for_pool_period(pool.id, period)
+
+    async def pool_status(self, pool: Pool, now: datetime) -> PoolStatus:
+        period = latest_due_period(now, pool.billing_day, self.tz, self.billing_hour)
+        next_billing = self.billing_moment(pool, add_months(period, 1))
+        if self.billing_moment(pool, period) < ensure_aware(pool.active_since):
+            # Збір створено (або знято з паузи) після останнього списання
+            return PoolStatus(pool, None, [], [], next_billing)
+
+        payments = await self.list_for_pool_period(pool, period)
+        billed = {p.member_id for p in payments}
+        newcomers = [m for m in await self.members.list_active(pool.id) if m.id not in billed]
+        return PoolStatus(pool, period, payments, newcomers, next_billing)
+
+    async def owner_statuses(self, owner: User, now: datetime) -> list[PoolStatus]:
+        return [
+            await self.pool_status(pool, now) for pool in await self.pools.list_by_owner(owner.id)
+        ]
