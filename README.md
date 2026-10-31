@@ -245,7 +245,7 @@ stateDiagram-v2
 - **Tested on both databases.** CI runs the suite on SQLite and on PostgreSQL 16, plus a check that
   the migration chain matches the models.
 
-All decisions and their reasons are documented (in Ukrainian) in [DECISIONS.md](DECISIONS.md).
+All decisions and their reasons are documented in [DECISIONS.md](DECISIONS.md).
 
 ## Roadmap
 

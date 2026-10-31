@@ -1,142 +1,143 @@
-# Рішення щодо неоднозначних вимог
+# Design decisions
 
-Тут записано вибори, яких специфікація не визначала однозначно.
+Choices that the original specification left open, and why they were made.
+The bot's interface is in Ukrainian, so UI strings are quoted in Ukrainian with a translation.
 
-## Етап 1. Каркас
+## Stage 1. Skeleton
 
-- **Розміщення проєкту.** Корінь репозиторію і є папка `skynemos/` зі схеми; пакет `bot/` лежить прямо в корені.
-- **Залежність `tzdata`.** Не входить у заявлений стек, але потрібна: на Windows (і в slim-образах без системної бази поясів) `zoneinfo.ZoneInfo("Europe/Kyiv")` інакше падає.
-- **Збірка пакета.** `hatchling` як build-backend у `pyproject.toml`. Це інструмент збірки, а не runtime-залежність.
-- **Менеджер оточення.** Локально використовую `uv`, але проєкт ставиться і звичайним `pip install -e ".[dev]"`; Docker-образ використовує `pip`.
-- **Розмітка повідомлень.** `parse_mode=HTML` за замовчуванням: безпечніше екранувати (`html.escape`), ніж MarkdownV2.
-- **Година списання.** Винесена в конфіг (`BILLING_HOUR`, за замовчуванням 10), часовий пояс теж (`TIMEZONE`).
-- **Порт postgres** відкритий назовні (`5432`) для зручності локальної розробки та міграцій з хоста.
-- **Кінці рядків.** `.gitattributes` з `eol=lf`: інакше на Windows Dockerfile і скрипти отримують CRLF і ламаються в Linux-контейнері.
+- **Project layout.** The repository root is the `skynemos/` folder from the spec; the `bot/` package sits directly in the root.
+- **`tzdata` dependency.** Not part of the declared stack, but required: on Windows (and in slim images without a system time zone database) `zoneinfo.ZoneInfo("Europe/Kyiv")` fails otherwise.
+- **Packaging.** `hatchling` as the build backend in `pyproject.toml`. It is a build tool, not a runtime dependency.
+- **Environment manager.** `uv` is used locally, but the project installs with plain `pip install -e ".[dev]"` too; the Docker image uses `pip`.
+- **Message markup.** `parse_mode=HTML` by default: escaping with `html.escape` is safer than MarkdownV2.
+- **Billing hour** is configurable (`BILLING_HOUR`, default 10), as is the time zone (`TIMEZONE`).
+- **The Postgres port** (`5432`) is exposed for convenient local development and running migrations from the host.
+- **Line endings.** `.gitattributes` with `eol=lf`: otherwise on Windows the Dockerfile and scripts get CRLF and break inside a Linux container.
 
-## Етап 2. Модель даних
+## Stage 2. Data model
 
-- **Власник не є рядком у `members`.** Він не платить сам собі, тож платежів у нього немає. Його частку зберігає `pools.owner_share_kop` (0, якщо `include_owner = false`). Інваріант: `owner_share_kop + Σ share_kop активних учасників = total_amount_kop`. Так правило «власник не може приєднатися до свого збору» тримається на рівні моделі.
-- **`members.share_is_custom`.** Позначає частку, яку власник задав вручну. Під час автоматичного перерозподілу (хтось приєднався чи вийшов) ручні частки не змінюються, а решта суми ділиться між іншими.
-- **Вихід зі збору = `is_active = false`**, рядок не видаляється: зберігається історія платежів, а повторне приєднання реактивує той самий рядок (unique `(pool_id, user_id)`).
-- **Статус платежу як VARCHAR + CHECK** (`native_enum=False`), а не нативний `ENUM` Postgres: однаково працює в Postgres і SQLite (тести), а нові статуси додаються без `ALTER TYPE`.
-- **`payments.last_reminded_at`.** Не було у специфікації. Потрібне, щоб нагадування не надсилалося двічі за день, якщо джоба спрацює кілька разів.
-- **`payments.created_at`.** Корисно для діагностики й пропущених запусків.
-- **Ідемпотентне створення платежу.** `create_if_absent` спершу шукає платіж, а вставку робить у SAVEPOINT. Якщо паралельний процес встиг першим, ловимо `IntegrityError` по `(member_id, period)` і повертаємо наявний. Це переносимо між Postgres і SQLite, на відміну від `ON CONFLICT`.
-- **Репозиторії не комітять.** Транзакцією керує викликач (middleware/сервіс/джоба): одна дія користувача = одна транзакція.
-- **Міграція написана вручну** на основі автогенерації: автогенерація з SQLite дає `DEFAULT 1` для boolean, що ламається в Postgres. Тест `tests/test_migrations.py` перевіряє, що міграції збігаються з моделями й відкочуються.
-- **Міграції в Docker** запускаються при старті контейнера бота (`alembic upgrade head && python -m bot`).
-- **`DatabaseSettings`** винесені окремо від `Settings`, щоб Alembic працював без `BOT_TOKEN`.
+- **The owner is not a row in `members`.** They don't pay themselves, so they have no payments. Their share lives in `pools.owner_share_kop` (refined in stage 3). Invariant: `owner_share_kop + Σ share_kop of active members = total_amount_kop`. This way the rule "the owner can't join their own collection" holds at the model level.
+- **`members.share_is_custom`** marks a share set manually by the owner. When shares are redistributed automatically (someone joins or leaves), custom shares stay as they are and the rest is split among the others.
+- **Leaving a collection = `is_active = false`**; the row is not deleted. Payment history is kept, and rejoining reactivates the same row (unique `(pool_id, user_id)`).
+- **Payment status as VARCHAR + CHECK** (`native_enum=False`) instead of a native Postgres `ENUM`: it behaves the same in Postgres and SQLite (tests), and new statuses don't need `ALTER TYPE`.
+- **`payments.last_reminded_at`** was not in the spec. It prevents sending a reminder twice a day if the job runs several times.
+- **`payments.created_at`** is useful for diagnostics and missed runs.
+- **Idempotent payment creation.** `create_if_absent` first looks the payment up and inserts inside a SAVEPOINT. If a parallel process got there first, the `IntegrityError` on `(member_id, period)` is caught and the existing payment is returned. Unlike `ON CONFLICT`, this is portable between Postgres and SQLite.
+- **Repositories never commit.** The caller (middleware / service / job) owns the transaction: one user action = one transaction.
+- **The first migration was written by hand** from the autogenerated draft: autogeneration against SQLite produces `DEFAULT 1` for booleans, which breaks on Postgres. `tests/test_migrations.py` checks that migrations match the models and downgrade cleanly.
+- **Migrations in Docker** run when the bot container starts (`alembic upgrade head && python -m bot`).
+- **`DatabaseSettings`** are separate from `Settings` so Alembic works without `BOT_TOKEN`.
 
-## Етап 3. Створення збору та приєднання
+## Stage 3. Creating and joining collections
 
-- **Розподіл часток зроблено на етапі 3**, а не 4: без нього приєднання не може коректно перерахувати суми. Етап 4 додасть дати списання й створення платежів.
-- **`owner_share_kop` = сума, яку фактично покриває власник.** Якщо власник у розподілі, це його частка плюс залишок у копійках. Якщо не в розподілі, але учасників немає (або всі мають ручні частки, що не покривають суму), невкриту частину теж показуємо на власнику. Так інваріант «сума часток = загальна сума» виконується завжди.
-- **Залишок у копійках цілком іде одній людині** (власнику або першому учаснику з автоматичною часткою), як у специфікації. Тобто різниця між частками може бути до `n−1` копійок, а не лише 1.
-- **Ручні частки** зберігаються під час перерахунку, решта суми ділиться між іншими. Якщо ручні частки разом перевищили загальну суму (наприклад, власник зменшив суму збору), вони скидаються до автоматичних.
-- **Повторне приєднання** після виходу скидає ручну частку до автоматичної.
-- **Учасник, що вже в зборі, може відкрити посилання навіть до заповненого збору**: він побачить «ти вже в зборі», а не «немає місць».
-- **Токен запрошення**: `secrets.token_urlsafe(12)` (16 символів). Callback кнопки «Приєднатися» містить сам токен, тож після перегенерації посилання стара кнопка перестає працювати.
-- **FSM-сховище: `MemoryStorage`.** Redis не входить у стек. Наслідок: незавершений діалог `/new` губиться при перезапуску бота, а стара кнопка відповідає «почни заново». Для MVP прийнятно.
-- **Перехід за посиланням-запрошенням скидає незавершений `/new`.**
-- **Команди посеред діалогу.** `/help`, `/my`, `/start` працюють і не ламають діалог (роутер `create` підключено останнім). Невідома команда (`/foo`) не сприймається як відповідь: бот підказує `/cancel`.
-- **Додано `/cancel`** (не було у специфікації) для виходу з діалогу.
-- **Реквізити показуються лише після приєднання** (і в описі збору власнику), а не в попередньому перегляді за посиланням.
-- **Транзакції.** Middleware відкриває одну сесію на апдейт і комітить після хендлера. Користувач створюється/оновлюється в БД при кожному апдейті.
-- **Сповіщення власника про нового учасника** надсилаються через `notifier.notify`, який ловить `TelegramForbiddenError` і позначає користувача недоступним.
-- **`/status`** поки відповідає «в розробці»: його зробимо на етапі 5.
+- **The share split was built in stage 3** rather than stage 4: joining can't recalculate amounts correctly without it. Stage 4 added billing dates and payment creation.
+- **`owner_share_kop` = the amount the owner actually covers.** If the owner takes part in the split, it is their share plus the leftover kopecks. If they don't, but there are no members yet (or every member has a custom share that doesn't cover the total), the uncovered part is shown on the owner too. This keeps "sum of shares = total" true at all times.
+- **Leftover kopecks go entirely to one person** (the owner, or the first member with an automatic share), as the spec says. So shares can differ by up to `n−1` kopecks, not just 1.
+- **Custom shares** are kept during recalculation and the rest is split among the others. If custom shares together exceed the total (for example, the owner lowered the amount), they are reset to automatic.
+- **Rejoining** after leaving resets a custom share to automatic.
+- **A member can open the invite link of a full collection**: they see "you're already in" rather than "no places left".
+- **Invite token**: `secrets.token_urlsafe(12)` (16 characters). The Join button's callback contains the token itself, so after the link is regenerated old buttons stop working.
+- **FSM storage: `MemoryStorage`.** Redis was not part of the stack (see improvement D for the optional Redis). Consequence: an unfinished `/new` dialog is lost on restart, and an old button replies "start again". Acceptable for an MVP.
+- **Opening an invite link cancels an unfinished `/new`.**
+- **Commands mid-dialog.** `/help`, `/my` and `/start` work without breaking the dialog (the `create` router is registered last). An unknown command (`/foo`) is not taken as an answer: the bot suggests `/cancel`.
+- **`/cancel`** was added (not in the spec) to leave a dialog.
+- **Payment details are shown only after joining** (and to the owner in the collection card), not in the invite preview.
+- **Transactions.** A middleware opens one session per update and commits after the handler. The user is created/updated in the database on every update.
+- **Owner notifications about new members** go through `notifier.notify`, which catches `TelegramForbiddenError` and marks the user as unreachable.
+- **`/status`** replied "in development" at this stage; it was built in stage 5.
 
-## Етап 4. Дати списання та платежі
+## Stage 4. Billing dates and payments
 
-- **Момент списання** — день списання о `BILLING_HOUR` (10:00) за Києвом. День 29–31 у коротших місяцях стає останнім днем місяця (у лютому 28 або 29). Усі дати рахуються в `Europe/Kyiv`, а не в UTC: 1 грудня 01:30 за Києвом — це вже грудень, хоча в UTC ще 30 листопада.
-- **Хто платить за період.** Платіж за період створюється для активного учасника, який приєднався **до** моменту списання. Хто приєднався пізніше, платить з наступного циклу (узгоджено з правилом «нові частки діють з наступного циклу»).
-- **`pools.active_since`** (міграція 0002). Платежі створюються лише за цикли, чий момент списання не раніше цієї дати. Під час створення поле дорівнює `created_at`, а на етапі 6 його оновлюватиме зняття з паузи. Так збір, створений 10-го з днем списання 5, уперше виставить рахунок наступного місяця, а збір, знятий з паузи, не виставить рахунків за місяці паузи.
-- **Пропущені запуски.** Джоба створює платежі за всі періоди, що настали з `active_since`, але не більше ніж за **3** останні (`MAX_CATCHUP_PERIODS`): довгий простій не завалить учасників десятком повідомлень. Сума береться з поточної частки учасника.
-- **Нульова частка** (наприклад, 0,01 грн на трьох) — платіж не створюється.
-- **Переходи статусів**: `pending→claimed` (учасник), `claimed→paid` (власник підтвердив), `claimed→pending` (власник «не бачу оплати»), `pending|claimed→paid` (власник вручну або банк у фазі 2). `paid` — кінцевий. Повторний перехід у той самий статус не є помилкою, а повертає `changed=False`: подвійні кліки безпечні.
-- **«Підтвердити» з `pending` заборонено**: якщо заявку вже відхилили, стара кнопка «Підтвердити» не має проводити оплату. Для цього є окрема дія «позначити оплаченим вручну».
-- **Нагадування**: через 2 і 5 днів після списання, не більше 3 за період і не частіше разу на день. Якщо бот пропустив обидва нагадування через простій, надсилається одне, а лічильник «доганяє» розклад.
-- **Задел під фазу 2**: `PaymentService.mark_paid_automatically(payment, now, via=PaidVia.BANK)` — точка входу для автопідтвердження за випискою monobank. Поле «ким підтверджено» в БД поки не зберігається, його додасть фаза 2.
-- **Часові мітки** отримали Python-дефолт (`utcnow`) поряд із серверним `now()`, а моделі — `eager_defaults`. Значення доступні одразу після вставки без лінивої догрузки, яка в async неможлива. SQLite повертає naive datetime, тому порівняння йдуть через `ensure_aware` (naive = UTC).
+- **Billing moment** = the billing day at `BILLING_HOUR` (10:00) Kyiv time. Days 29–31 become the last day of shorter months (28 or 29 in February). All dates are computed in `Europe/Kyiv`, not UTC: 1 December 01:30 in Kyiv is already December, even though it is still 30 November in UTC.
+- **Who pays for a period.** A payment for a period is created for an active member who joined **before** the billing moment. Whoever joined later pays from the next cycle (consistent with "new shares apply from the next cycle").
+- **`pools.active_since`** (migration 0002). Payments are created only for cycles whose billing moment is not earlier than this timestamp. On creation it equals `created_at`, and resuming a paused collection updates it (stage 6). So a collection created on the 10th with billing day 5 bills for the first time next month, and a resumed collection is never billed for the paused months.
+- **Missed runs.** The job creates payments for every period that has come since `active_since`, but for no more than the last **3** (`MAX_CATCHUP_PERIODS`): a long downtime won't flood members with a dozen messages. The amount is the member's current share.
+- **Zero share** (e.g. 0.01 UAH split three ways): no payment is created.
+- **Status transitions**: `pending→claimed` (member), `claimed→paid` (owner confirmed), `claimed→pending` (owner: "I don't see the payment"), `pending|claimed→paid` (owner manually, or the bank in phase 2). `paid` is final. A repeated transition to the same status is not an error and returns `changed=False`, so double clicks are safe.
+- **"Confirm" from `pending` is forbidden**: if the claim was already rejected, an old "Confirm" button must not mark the payment as paid. There is a separate "mark as paid manually" action for that.
+- **Reminders**: 2 and 5 days after billing, no more than 3 per period and no more than once a day. If the bot missed both reminders during downtime, it sends one and the counter catches up with the schedule.
+- **Groundwork for phase 2**: `PaymentService.mark_paid_automatically(payment, now, via=PaidVia.BANK)` is the entry point for automatic confirmation from a monobank statement. Who confirmed a payment is not stored yet; phase 2 will add that.
+- **Timestamps** got a Python default (`utcnow`) next to the server-side `now()`, and the models use `eager_defaults`. Values are available right after insert without lazy loading, which is impossible in async code. SQLite returns naive datetimes, so comparisons go through `ensure_aware` (naive = UTC).
 
-## Етап 5. Платіжний цикл
+## Stage 5. Payment cycle
 
-- **Одна джоба щогодини** (`cron minute=0`, Europe/Kyiv) плюс запуск одразу при старті бота. Щогодинний запуск, а не раз на день о 10:00: якщо бот був вимкнений о 10:00, платежі й нагадування підуть протягом години після старту, а не наступного дня. `coalesce` + `max_instances=1` + `asyncio.Lock` не дають запускам перекриватися.
-- **`payments.notified_at`** (міграція 0003). Створення платежу і надсилання запиту «скинь» розділені: джоба спершу комітить платежі, потім надсилає запити тим, у кого `notified_at` порожнє, і комітить після кожного повідомлення. Падіння посеред циклу не дає ні дублів, ні втрачених повідомлень. Платежі, створені до міграції, вважаються надісланими.
-- **Учасник заблокував бота.** `notify` ловить `TelegramForbiddenError`, позначає користувача `is_reachable=false`, а власник отримує одне попередження з сумою, щоб нагадати самому. Далі джоба такого учасника пропускає (без спаму власнику). Коли учасник розблокує бота і будь-що йому напише, middleware повертає `is_reachable=true`, і найближчий запуск надішле пропущений запит.
-- **Тимчасові помилки** (мережа, 5xx) не плутаються з блокуванням: платіж лишається неповідомленим і повторюється наступного запуску. На `RetryAfter` (флуд-контроль) бот чекає й пробує ще раз. Між повідомленнями пауза 50 мс (≈20/с при ліміті Telegram 30/с).
-- **Нагадування не доганяють щойно надісланий запит.** Запит «скинь» рахується як контакт цього дня, тож після простою учасник не отримає запит і нагадування одне за одним.
-- **Кому не нагадуємо:** платежі `claimed`/`paid`, збори на паузі, учасники, що вийшли, недоступні користувачі.
-- **Кнопки після зміни статусу.** Повідомлення з кнопкою редагується (учасник бачить «⏳ чекаємо підтвердження», власник — «✅ Підтверджено»), повторні кліки отримують спливаючу підказку замість дій. «Не бачу оплати» надсилає учаснику нове повідомлення з кнопкою «Я скинув ✅».
-- **`/status`** показує останній період, що настав, для кожного збору власника: ✅ підтверджено, ⏳ чекає підтвердження, ❌ не скинуто; 🆕 для тих, хто приєднався після списання; підсумок «Зібрано X з Y». Якщо перше списання ще не настало, показує його дату.
-- **`UTCDateTime`.** Тип колонки, що завжди пише UTC і повертає час з поясом. Без нього SQLite у тестах відкидав пояс і київські 10:00 перетворювалися на 13:00. Postgres цим не страждає, але тепер обидві БД поводяться однаково. Naive datetime при записі — помилка.
+- **One hourly job** (`cron minute=0`, Europe/Kyiv) plus a run right after startup. Hourly rather than daily at 10:00: if the bot was down at 10:00, payments and reminders go out within an hour of startup, not the next day. `coalesce`, `max_instances=1` and an `asyncio.Lock` keep runs from overlapping.
+- **`payments.notified_at`** (migration 0003). Creating a payment and sending the "time to chip in" request are separate: the job commits the payments first, then sends requests to those whose `notified_at` is empty, committing after every message. A crash mid-run causes neither duplicates nor lost messages. Payments created before the migration count as sent.
+- **A member blocked the bot.** `notify` catches `TelegramForbiddenError`, marks the user `is_reachable=false`, and the owner gets a single warning with the amount so they can remind the member themselves. After that the job skips this member (no spam for the owner). When the member unblocks the bot and writes anything to it, the middleware sets `is_reachable=true` and the next run delivers the missed request.
+- **Transient errors** (network, 5xx) are not confused with blocking: the payment stays un-notified and is retried on the next run. On `RetryAfter` (flood control) the bot waits and tries again. There is a 50 ms pause between messages (~20/s against Telegram's 30/s limit).
+- **Reminders don't chase a request that was just sent.** The request counts as today's contact, so after downtime a member doesn't get a request and a reminder back to back.
+- **No reminders for:** `claimed`/`paid` payments, paused collections, members who left, unreachable users.
+- **Buttons after a status change.** The message with the button is edited (the member sees "⏳ waiting for confirmation", the owner sees "✅ Confirmed"), and repeated clicks get a popup instead of an action. "I don't see the payment" sends the member a new message with the "I sent it ✅" button.
+- **`/status`** shows the latest period that has come for each of the owner's collections: ✅ confirmed, ⏳ waiting for confirmation, ❌ not paid; 🆕 for members who joined after billing; a total "collected X of Y". If the first billing hasn't happened yet, it shows its date.
+- **`UTCDateTime`.** A column type that always writes UTC and returns timezone-aware values. Without it SQLite in tests dropped the time zone and 10:00 Kyiv turned into 13:00. Postgres doesn't have this problem, but now both databases behave the same. Writing a naive datetime is an error.
 
-## Етап 6. Керування збором
+## Stage 6. Collection management
 
-- **Меню власника** в картці збору (`/my` → збір): посилання / нове посилання, сума, день, реквізити, учасники й частки, ручна позначка оплати, пауза / відновлення, видалення. Небезпечні дії (видалити збір, видалити учасника, вийти) потребують підтвердження окремою кнопкою.
-- **Хто отримує сповіщення:**
-  - зміна суми або ручної частки → кожен учасник, у кого частка змінилася (було/стало);
-  - зміна дня або реквізитів → усі активні учасники;
-  - видалення учасника → він сам, і ті, кому через це змінилася частка;
-  - пауза, відновлення, видалення збору → усі активні учасники;
-  - ручна позначка оплати → учасник, чий платіж позначено;
-  - вихід учасника → власник.
-  Нове посилання-запрошення учасників не зачіпає, тому без сповіщень. Приєднання та вихід учасника не розсилають іншим учасникам повідомлення про нові частки: це не дія власника, а нова частка видна в `/my` і діє з наступного циклу.
-- **Усі зміни сум діють з наступного циклу:** уже створені платежі не перераховуються, про це сказано в повідомленнях.
-- **Зміна дня списання посеред місяця** не створює другого платежу за місяць (унікальний індекс `(member_id, period)`). Якщо новий день цього місяця вже минув, а платежу за місяць ще не було, джоба створить його найближчого запуску.
-- **Ручна частка** може бути 0 (учасник тимчасово не платить). Сума ручних часток не може перевищувати загальну суму, інакше бот попросить ввести інше значення. Кнопка «Повернути автоматичну частку» скидає ручну.
-- **Пауза** зупиняє нові платежі й нагадування. Після відновлення `active_since = now`, тому за місяці паузи рахунків не буде. Уже виставлені неоплачені платежі лишаються і після відновлення знову отримують нагадування.
-- **Видалення збору** видаляє й історію платежів (каскад). Учасники отримують сповіщення до видалення даних.
-- **Видалений або вийшлий учасник** зберігає рядок (`is_active=false`) та історію платежів; у `/status` його неоплачений платіж позначено «вийшов(-ла) зі збору». Нагадування йому не надсилаються.
-- **Ручна позначка оплати** доступна для будь-якого неоплаченого платежу збору (зокрема за минулі місяці і від учасників, що вийшли).
-- **Режим редагування** (FSM `EditPool`) скасовується `/cancel`, кнопкою «Назад» або відкриттям іншого розділу. Команди посеред редагування не сприймаються як значення. У даних стану зберігається лише `pool_id`/`member_id`, права власника перевіряються сервісом при збереженні.
-- **Спливаючі вікна** (callback alerts) — короткий текст без HTML: Telegram не рендерить у них розмітку й обрізає їх до 200 символів.
+- **Owner menu** in the collection card (`/my` → collection): invite link / new link, amount, day, payment details, members and shares, manual payment marking, pause / resume, deletion. Dangerous actions (delete the collection, remove a member, leave) require confirmation with a separate button.
+- **Who gets notified:**
+  - amount or custom share changed → every member whose share changed (old/new);
+  - day or payment details changed → all active members;
+  - member removed → that member, plus those whose share changed because of it;
+  - pause, resume, deletion → all active members;
+  - payment marked as paid manually → the member whose payment it is;
+  - member left → the owner.
+  A new invite link doesn't affect members, so there's no notification. Members joining or leaving don't trigger share-change messages to the others: it isn't an owner action, the new share is visible in `/my` and applies from the next cycle.
+- **All amount changes apply from the next cycle**: payments already created are never recalculated, and the messages say so.
+- **Changing the billing day mid-month** never creates a second payment for the month (unique index `(member_id, period)`). If the new day has already passed this month and there was no payment for the month yet, the job creates it on its next run.
+- **A custom share** can be 0 (a member temporarily doesn't pay). The sum of custom shares can't exceed the total, otherwise the bot asks for another value. The "back to automatic share" button resets it.
+- **Pause** stops new payments and reminders. On resume `active_since = now`, so there are no bills for the paused months. Unpaid payments issued earlier remain and get reminders again after resuming.
+- **Deleting a collection** also deletes its payment history (cascade). Members are notified before the data is removed.
+- **A removed member or one who left** keeps their row (`is_active=false`) and payment history; in `/status` their unpaid payment is labelled "left the collection". They get no reminders.
+- **Manual payment marking** works for any unpaid payment of the collection (including past months and members who left).
+- **Edit mode** (FSM `EditPool`) is cancelled by `/cancel`, the Back button or opening another section. Commands during editing are not taken as values. The state only stores `pool_id`/`member_id`; the owner's permissions are checked by the service when saving.
+- **Popups** (callback alerts) use short plain text: Telegram doesn't render markup in them and truncates them to 200 characters.
 
-## Етап 7. Поліровка
+## Stage 7. Polish
 
-- **Глобальний обробник помилок** (`dp.errors`): непередбачений виняток логується з `update_id` і id користувача, транзакцію відкочує middleware, а користувач отримує «щось пішло не так» (повідомленням або спливаючим вікном для кнопок).
-- **Fallback-роутер** останнім: незрозумілий текст отримує підказку `/help`, застаріла кнопка (зі старої версії або видаленого збору) отримує спливаюче вікно замість мовчання.
-- **Лише приватні чати.** Фільтр на рівні кореневого роутера: якщо бота додадуть у групу, він не відповідатиме на кожне повідомлення.
-- **Логування** через стандартний `logging`, без `print`. Ключові події (створення збору, приєднання, вихід, видалення, пауза, зміни статусів платежів, звіт джоби) пишуться на INFO лише з id, без імен і реквізитів. Балакучі логери бібліотек (`aiogram.event`, `apscheduler`, `sqlalchemy.engine`) приглушено до WARNING.
-- **Валідація конфігурації на старті:** формат токена, часовий пояс, рівень логування, година списання. Помилка дає зрозуміле повідомлення і код виходу 1, а не трейсбек посеред роботи.
-- **CI** (GitHub Actions): ruff check, ruff format --check, pytest на Python 3.12. Це не нова залежність, а лише конфіг для GitHub.
+- **Global error handler** (`dp.errors`): an unexpected exception is logged with the `update_id` and user id, the middleware rolls back the transaction, and the user gets "something went wrong" (as a message, or a popup for buttons).
+- **A fallback router** comes last: unrecognised text gets a `/help` hint, a stale button (from an old version or a deleted collection) gets a popup instead of silence.
+- **Private chats only.** A filter on the root router: if the bot is added to a group, it won't reply to every message.
+- **Logging** uses the standard `logging` module, no `print`. Key events (collection created, member joined/left, deletion, pause, payment status changes, job summary) are logged at INFO with ids only, no names or payment details. Chatty library loggers (`aiogram.event`, `apscheduler`, `sqlalchemy.engine`) are muted to WARNING.
+- **Configuration is validated at startup**: token format, time zone, log level, billing hour. An error gives a clear message and exit code 1 instead of a traceback mid-run.
+- **CI** (GitHub Actions): ruff check, ruff format --check and pytest on Python 3.12 (extended in improvement D). It is configuration for GitHub, not a new dependency.
 
-## Покращення A. Зручність оплати
+## Improvement A. Easier payments
 
-- **Номер картки в `<code>`.** Групи з 13–19 цифр (з пробілами чи дефісами) обгортаються в `<code>`: у Telegram такий текст копіюється одним дотиком. Текст спершу екранується, потім обгортається; цифри всередині посилань не чіпаються. 10-значний номер телефону не вважається карткою.
-- **Кнопка «Відкрити банку / посилання для оплати».** Береться перше коректне `http(s)`-посилання з реквізитів. Інші схеми (`javascript:` тощо) і хости без крапки (`localhost`) ігноруються: некоректний URL у кнопці змусив би Telegram відхилити все повідомлення. Сума в посилання на банку mono **не підставляється**: не перевірено, що monobank підтримує такий параметр.
-- **«🎉 Усі скинули».** Надсилається власнику, коли перехід у `paid` закрив останній неоплачений платіж періоду в зборі (підтвердження заявки або ручна позначка). Лише при реальній зміні статусу, тому повторні кліки не дублюють привітання. Ту саму ознаку повертає й задел під фазу 2 (`mark_paid_automatically`).
-- **Накопичений борг.** У запиті «скинь» і нагадуванні є блок «ще не оплачено раніше», що включає **лише попередні періоди**, та підсумок разом із поточним платежем. Після простою джоба створює кілька платежів одразу, і запит за вересень не має згадувати жовтень. У картці збору учасник бачить загальний борг або «✅ Боргів немає». Борг включає і `claimed` (заявлено, але ще не підтверджено).
+- **Card numbers in `<code>`.** Groups of 13–19 digits (with spaces or dashes) are wrapped in `<code>`: Telegram copies such text with one tap. The text is escaped first and wrapped afterwards; digits inside links are left alone. A 10-digit phone number is not treated as a card.
+- **Ukrainian IBAN** (UA + 27 digits, 29 characters in total, with or without spaces) is wrapped in `<code>` **as a whole**. The regex boundaries never wrap only part of a longer digit run: previously the middle of a spaced IBAN looked like a 16-digit card number and that fragment was what got copied. A digit run that is neither a card (13–19) nor an IBAN is not wrapped at all.
+- **"Open jar / payment link" button.** The first valid `http(s)` link in the payment details is used. Other schemes (`javascript:` etc.) and hosts without a dot (`localhost`) are ignored: an invalid URL in a button would make Telegram reject the whole message. The amount is **not** added to the monobank jar link: it is unverified that monobank supports such a parameter.
+- **"🎉 Everyone paid".** Sent to the owner when a transition to `paid` closes the last unpaid payment of the period in the collection (a confirmed claim or manual marking). Only on a real status change, so repeated clicks don't duplicate the message. The phase 2 entry point (`mark_paid_automatically`) returns the same flag.
+- **Accumulated debt.** The "time to chip in" request and reminders include an "still unpaid from earlier" block that lists **only earlier periods**, plus a total including the current payment. After downtime the job creates several payments at once, and the September request must not mention October. In the collection card a member sees their total debt or "✅ No debts". The debt includes `claimed` payments (claimed but not yet confirmed).
 
-## Покращення B. Відкладення, підсумок, ваги, співвласник (міграція 0004)
+## Improvement B. Snooze, digest, weights, co-owner (migration 0004)
 
-- **Міграція на живих даних.** Нові NOT NULL колонки мають сталі дефолти (`weight=1`, `owner_weight=1`, `is_admin=false`), тож наявні збори рахуються як раніше. Окремий тест створює базу на ревізії 0003 зі збором, учасником і платежем та оновлює її до head.
-- **«⏰ Нагадай завтра».** Кнопка під запитом і нагадуванням. До завтра, `BILLING_HOUR` (10:00 за Києвом), нагадувань немає, потім приходить одне з текстом «як ти просив(-ла)». Воно **не рахується** в ліміт 3 нагадувань на місяць (учасник сам про нього попросив), але правило «не частіше разу на день» діє. Після нього розклад +2/+5 днів продовжується як звичайно. Відкласти можна лише неоплачений (`pending`) платіж.
-- **Підсумок власнику на 3-й день.** Джоба один раз за період (позначка `pools.digest_period`) надсилає «скинули X з Y» зі списком тих, хто ще не скинув. Якщо всі вже оплатили, підсумок не надсилається. Лише за останній період і лише для зборів не на паузі. Отримує тільки власник; співвласник бачить `/status`.
-- **Частки за вагами.** У кожного учасника та власника є кількість часток (1–10, за замовчуванням 1). Автоматичні частки пропорційні вагам з округленням донизу; залишок у копійках — за правилом ТЗ (власнику, якщо він у розподілі, інакше першому учаснику з автоматичною часткою). Ручна частка має пріоритет над вагою. Сума часток завжди дорівнює загальній сумі, і це перевіряє параметризований тест.
-- **Співвласник** (`members.is_admin`). Може підтверджувати чи відхиляти заявки, позначати оплату вручну, бачити `/status` і список неоплачених та отримує запити «я скинув» разом із власником. **Не може** змінювати суму, реквізити, учасників, ставити на паузу чи видаляти збір. Не може підтверджувати **власні** платежі: це робить лише власник. Отримувачем грошей лишається власник. Вихід або видалення зі збору знімає права співвласника.
+- **Migration on live data.** New NOT NULL columns have constant defaults (`weight=1`, `owner_weight=1`, `is_admin=false`), so existing collections behave as before. A dedicated test creates a database at revision 0003 with a collection, a member and a payment, then upgrades it to head.
+- **"⏰ Remind me tomorrow".** A button under the request and reminders. No reminders until tomorrow at `BILLING_HOUR` (10:00 Kyiv time), then exactly one with the text "as you asked". It **doesn't count** towards the limit of 3 reminders per month (the member asked for it), but the once-a-day rule still applies. After it, the +2/+5 day schedule continues as usual. Only an unpaid (`pending`) payment can be snoozed.
+- **Day-3 digest for the owner.** Once per period (marker `pools.digest_period`) the job sends "X of Y paid" with the list of those who haven't. If everyone has paid, no digest is sent. Only for the latest period and only for collections that aren't paused. Only the owner receives it; a co-owner can use `/status`.
+- **Weighted shares.** Every member and the owner have a number of shares (1–10, default 1). Automatic shares are proportional to weights, rounded down; leftover kopecks follow the spec's rule (to the owner if they take part, otherwise to the first member with an automatic share). A custom share takes priority over the weight. The sum of shares always equals the total, verified by a parametrized test.
+- **Co-owner** (`members.is_admin`). Can confirm or reject claims, mark payments as paid manually, see `/status` and the list of unpaid payments, and receives "I sent it" requests together with the owner. **Cannot** change the amount, payment details or members, pause or delete the collection. Cannot confirm **their own** payments: only the owner does that. The owner remains the payee. Leaving or being removed from the collection revokes co-owner rights.
 
-## Покращення C. Річні та разові збори (міграція 0005)
+## Improvement C. Yearly and one-time collections (migration 0005)
 
-- **Частота збору** (`pools.frequency`): `monthly` (як раніше, дефолт для наявних зборів), `yearly` (раз на рік, `billing_month` + `billing_day`), `once` (один раз, ще й `billing_year`). Узгодженість полів гарантують CHECK-обмеження в БД і `validate_schedule` у сервісі.
-- **Період** лишається першим числом місяця списання, тож платежі, нагадування, борг і `/status` працюють без змін. Календар узагальнено в `Schedule` (крок 1 або 12 місяців; для разового — рівно один період). Старі функції місячного календаря лишилися, і їхні тести не змінювалися.
-- **Діалог `/new`** отримав крок «Як часто?» (тепер 6 кроків). Для річного й разового збору дата вводиться як `дд.мм`. 29 лютого для річного збору дозволено: у невисокосні роки списання 28-го.
-- **Разовий збір: рік обирається автоматично** — найближча дата `дд.мм`, **строго пізніша за сьогодні**. «Сьогодні» не дозволено: якщо збір створено після 10:00 у день списання, момент уже минув і платежі не створилися б. Обраний рік видно на екрані підтвердження.
-- **Після разового списання** нових платежів немає; `/status` показує той самий період, а «наступного списання» немає. Нагадування за неоплаченими платежами тривають як звичайно.
-- **Зміна дати** для річного й разового збору в меню («📅 День») приймає `дд.мм`; для разового рік знову обирається як найближча майбутня дата. **Змінити частоту** наявного збору не можна: простіше створити новий збір.
-- **Річний збір, створений після дати списання** цього року, уперше виставить рахунок наступного року (як і місячний: рахунки лише за цикли після `active_since`).
+- **Collection frequency** (`pools.frequency`): `monthly` (as before, the default for existing collections), `yearly` (once a year, `billing_month` + `billing_day`), `once` (a single time, plus `billing_year`). CHECK constraints in the database and `validate_schedule` in the service keep the fields consistent.
+- **The period** is still the first day of the billing month, so payments, reminders, debt and `/status` work unchanged. The calendar is generalised in `Schedule` (a step of 1 or 12 months; exactly one period for one-time collections). The old monthly calendar functions remain, and their tests were not changed.
+- **The `/new` dialog** got a "How often?" step (6 steps now). For yearly and one-time collections the date is entered as `dd.mm`. 29 February is allowed for yearly collections: in non-leap years billing happens on the 28th.
+- **One-time collection: the year is chosen automatically** — the nearest `dd.mm` date **strictly after today**. "Today" is not allowed: if the collection were created after 10:00 on the billing day, the moment would already have passed and no payments would be created. The chosen year is shown on the confirmation screen.
+- **After a one-time billing** there are no new payments; `/status` keeps showing that period with no "next billing". Reminders for unpaid payments continue as usual.
+- **Changing the date** of a yearly or one-time collection in the menu ("📅 Day") accepts `dd.mm`; for one-time collections the year is again the nearest future date. **The frequency** of an existing collection can't be changed: it's simpler to create a new one.
+- **A yearly collection created after this year's billing date** bills for the first time next year (like monthly ones: bills only for cycles after `active_since`).
 
-## Покращення D. Інструменти
+## Improvement D. Tooling
 
-- **mypy у строгому режимі** (`strict = true`) для пакета `bot`. Знайшов одну помилку (аннотація `__mapper_args__`), виправлено. Бібліотеки без type hints (`apscheduler`, `sentry_sdk`) пропущено через `ignore_missing_imports`.
-- **Покриття тестами** через `pytest-cov` (~85%). CI падає, якщо покриття нижче 80%.
-- **Тести на PostgreSQL.** Якщо задано `TEST_DATABASE_URL`, фікстура `engine` використовує справжній Postgres (схема створюється й видаляється на кожен тест), а окремий тест проганяє весь ланцюжок міграцій на Postgres і звіряє з моделями. Без змінної все працює на SQLite, як раніше. У CI — матриця `sqlite` / `postgres` з сервісом `postgres:16`. **Локально Postgres-прогін не перевірено** (немає Docker); він запуститься після push на GitHub.
-- **Redis для FSM (опційно).** `REDIS_URL` → `RedisStorage`, і незавершений діалог переживає перезапуск. Нова опційна залежність `redis` (extra `.[redis]`) — офіційний бекенд aiogram для цього. У docker-compose Redis додано сервісом. Без `REDIS_URL` лишається `MemoryStorage`. **Зі справжнім Redis не перевірено.**
-- **Sentry (опційно).** `SENTRY_DSN` → `sentry_sdk.init`; помилки, які логуються через `logger.error/exception` (зокрема глобальний обробник), стають подіями. Без трасування продуктивності й без персональних даних (`send_default_pii=False`). Нова опційна залежність `sentry-sdk` (extra `.[sentry]`); безкоштовного плану sentry.io вистачає. **Зі справжнім Sentry не перевірено.**
-- **Не зроблено свідомо:** webhook-режим (потрібен лише після деплою на сервер, а платний хостинг виключено), фаза 2 з monobank API (ТЗ: «не зараз»; потрібні справжній токен і звірка з документацією), демо-GIF (потрібен запис екрана власником).
-- **Український IBAN** (UA + 27 цифр, разом 29 символів, з пробілами чи без) обгортається в `<code>` **цілком**. Межі регулярного виразу не дають обгорнути лише частину довшого ряду цифр: раніше середина IBAN із пробілами виглядала як 16-значна картка і копіювалася саме вона. Ряд цифр, що не є ні карткою (13–19), ні IBAN, не розмічається.
+- **mypy in strict mode** (`strict = true`) for the `bot` package. It found one error (the `__mapper_args__` annotation), which was fixed. Libraries without type hints (`apscheduler`, `sentry_sdk`) are skipped via `ignore_missing_imports`.
+- **Test coverage** via `pytest-cov` (~85%). CI fails if coverage drops below 80%.
+- **Tests on PostgreSQL.** If `TEST_DATABASE_URL` is set, the `engine` fixture uses a real Postgres (the schema is created and dropped for every test), and a dedicated test runs the whole migration chain on Postgres and compares it with the models. Without the variable everything runs on SQLite as before. CI uses a `sqlite` / `postgres` matrix with a `postgres:16` service; the Postgres run passes in CI.
+- **Redis for FSM (optional).** `REDIS_URL` → `RedisStorage`, so an unfinished dialog survives restarts. New optional dependency `redis` (extra `.[redis]`), the official aiogram backend for this. Redis is added as a service in docker-compose. Without `REDIS_URL`, `MemoryStorage` is used. **Not tested against a real Redis.**
+- **Sentry (optional).** `SENTRY_DSN` → `sentry_sdk.init`; errors logged with `logger.error/exception` (including the global error handler) become events. No performance tracing and no personal data (`send_default_pii=False`). New optional dependency `sentry-sdk` (extra `.[sentry]`); the free sentry.io plan is enough. **Not tested against a real Sentry.**
+- **Deliberately not done:** webhook mode (only needed after deploying to a server, and paid hosting was out of scope), phase 2 with the monobank API (the spec says "not now"; it needs a real token and checking the current documentation), a demo GIF (needs a screen recording by the owner).
 
-## Дрібні покращення після запуску
+## Small improvements after launch
 
-- **Статус збору на паузі** більше не показує «перше списання …»: поки збір на паузі, списань немає, і `/status` так і пише.
-- **Зміна назви збору** (кнопка «📝 Назва» в меню власника): та сама валідація, що й при створенні (1–64 символи). Учасники отримують сповіщення «збір X тепер називається Y».
-- **README англійською** для портфоліо; інтерфейс бота і DECISIONS.md лишаються українською. Розділ зі скріншотами прибрано. Ліцензія — MIT.
+- **Status of a paused collection** no longer shows "first billing …": while paused there are no billings, and `/status` says exactly that.
+- **Renaming a collection** ("📝 Назва" / "Title" button in the owner menu): the same validation as on creation (1–64 characters). Members get a "collection X is now called Y" notification.
+- **README and DECISIONS.md in English** for the portfolio; the bot's interface stays in Ukrainian. The screenshots section was removed. License: MIT.
