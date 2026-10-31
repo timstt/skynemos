@@ -26,6 +26,14 @@ uv pip install -e ".[dev]"
 # .venv/bin/python -m bot        # Linux/macOS
 ```
 
+Міграції (потрібен запущений postgres, напр. `docker compose up -d db`):
+
+```bash
+alembic upgrade head                              # застосувати
+alembic revision --autogenerate -m "опис змін"    # нова міграція після зміни моделей
+alembic upgrade head --sql                        # подивитися SQL без підключення
+```
+
 Тести та лінтер:
 
 ```bash
