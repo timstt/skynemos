@@ -46,3 +46,31 @@ def test_payment_url(details: str, expected: str | None) -> None:
 def test_is_monobank_jar() -> None:
     assert is_monobank_jar("https://send.monobank.ua/jar/AbC123")
     assert not is_monobank_jar("https://example.com/send.monobank.ua")
+
+
+UA_IBAN_SPACED = "UA21 3223 1300 0002 6007 2335 6600 1"
+UA_IBAN = "UA213223130000026007233566001"
+
+
+@pytest.mark.parametrize("iban", [UA_IBAN_SPACED, UA_IBAN])
+def test_ukrainian_iban_is_copied_whole(iban: str) -> None:
+    assert (
+        format_details_html(f"IBAN: {iban}, ФОП Андрій") == f"IBAN: <code>{iban}</code>, ФОП Андрій"
+    )
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        "3223 1300 0002 6007 2335 6600 1",  # 23 цифри без UA — не картка й не IBAN
+        "12345678901234567890123",
+        "acc 1234 5678 9012 3456 7",  # 17 цифр із хвостом: не обрізати частину
+    ],
+)
+def test_long_digit_runs_are_not_partially_wrapped(details: str) -> None:
+    html = format_details_html(details)
+    assert "<code>" not in html or html.count("<code>") == 1 and "</code>" in html
+    # Головне: ніколи не обгортати лише частину суцільного ряду цифр
+    if "<code>" in html:
+        inner = html.split("<code>")[1].split("</code>")[0]
+        assert inner.replace(" ", "") == "".join(ch for ch in details if ch.isdigit())
