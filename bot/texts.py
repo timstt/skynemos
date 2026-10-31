@@ -7,7 +7,15 @@ from collections.abc import Sequence
 from datetime import date, datetime
 from html import escape as esc
 
-from bot.db.models import Frequency, Member, Payment, PaymentStatus, Pool, User
+from bot.db.models import (
+    MAX_TITLE_LENGTH,
+    Frequency,
+    Member,
+    Payment,
+    PaymentStatus,
+    Pool,
+    User,
+)
 from bot.services.details import format_details_html
 from bot.services.errors import DomainError, ErrorCode
 from bot.services.money import format_money
@@ -86,6 +94,7 @@ BTN_OPEN_PAY_LINK = "🔗 Відкрити посилання для оплат�
 BTN_CONFIRM = "✅ Підтвердити"
 BTN_REJECT = "❌ Не бачу оплати"
 BTN_REGEN_INVITE = "🔄 Нове посилання"
+BTN_EDIT_TITLE = "📝 Назва"
 BTN_EDIT_AMOUNT = "✏️ Сума"
 BTN_EDIT_DAY = "📅 День"
 BTN_EDIT_DETAILS = "💳 Реквізити"
@@ -563,11 +572,13 @@ def pool_status(status: PoolStatus) -> str:
     pool = status.pool
     if status.period is None:
         header = f"📌 <b>{esc(pool.title)}</b>"
-        body = (
-            f"Перше списання {short_date(status.next_billing)}."
-            if status.next_billing
-            else "Більше списань не буде."
-        )
+        if pool.is_paused:
+            # На паузі нових списань немає, тож дата «першого списання» вводила б в оману
+            body = "Списань не буде, поки збір на паузі."
+        elif status.next_billing:
+            body = f"Перше списання {short_date(status.next_billing)}."
+        else:
+            body = "Більше списань не буде."
     else:
         header = f"📌 <b>{esc(pool.title)}</b> — {period_name(status.period)}"
         lines = [_status_line(p) for p in status.payments]
@@ -597,6 +608,17 @@ EDIT_HINT = "\n\nСкасувати: /cancel або кнопка нижче."
 EXPECT_TEXT_INPUT = "Надішли нове значення текстом або натисни /cancel."
 EDIT_SESSION_EXPIRED = "Ця дія вже неактуальна. Відкрий збір ще раз: /my"
 NEXT_CYCLE_NOTE = "Діє з наступного списання: уже виставлені платежі не змінюються."
+
+
+def ask_new_title(pool: Pool) -> str:
+    return (
+        f"Зараз назва: <b>{esc(pool.title)}</b>.\n"
+        f"Напиши нову назву (до {MAX_TITLE_LENGTH} символів).{EDIT_HINT}"
+    )
+
+
+def member_title_changed(old_title: str, pool: Pool) -> str:
+    return f"📝 Збір <b>{esc(old_title)}</b> тепер називається <b>{esc(pool.title)}</b>."
 
 
 def ask_new_amount(pool: Pool) -> str:

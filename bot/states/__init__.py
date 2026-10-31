@@ -15,6 +15,7 @@ class CreatePool(StatesGroup):
 class EditPool(StatesGroup):
     """Власник вводить нове значення. У даних стану: pool_id (і member_id для частки)."""
 
+    title = State()
     amount = State()
     billing_day = State()
     billing_date = State()

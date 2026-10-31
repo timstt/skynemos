@@ -273,6 +273,13 @@ class PoolService:
         await self.pools.update(pool, total_amount_kop=total_kop)
         return await self._recalculate_with_changes(pool)
 
+    async def update_title(self, pool_id: int, owner: User, title: str) -> tuple[Pool, str]:
+        """Нова назва збору. Повертає (збір, стара_назва) — для сповіщення учасників."""
+        pool = await self.get_owned_pool(pool_id, owner)
+        old_title = pool.title
+        await self.pools.update(pool, title=validate_title(title))
+        return pool, old_title
+
     async def update_billing_day(self, pool_id: int, owner: User, day: int) -> Pool:
         pool = await self.get_owned_pool(pool_id, owner)
         return await self.pools.update(pool, billing_day=validate_billing_day(day))

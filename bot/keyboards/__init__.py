@@ -78,6 +78,7 @@ def owner_pool_kb(pool: Pool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     _pool_btn(kb, texts.BTN_INVITE_LINK, PoolAction.INVITE, pool.id)
     _pool_btn(kb, texts.BTN_REGEN_INVITE, PoolAction.REGEN_INVITE, pool.id)
+    _pool_btn(kb, texts.BTN_EDIT_TITLE, PoolAction.EDIT_TITLE, pool.id)
     _pool_btn(kb, texts.BTN_EDIT_AMOUNT, PoolAction.EDIT_AMOUNT, pool.id)
     _pool_btn(kb, texts.BTN_EDIT_DAY, PoolAction.EDIT_DAY, pool.id)
     _pool_btn(kb, texts.BTN_EDIT_DETAILS, PoolAction.EDIT_DETAILS, pool.id)
@@ -89,7 +90,7 @@ def owner_pool_kb(pool: Pool) -> InlineKeyboardMarkup:
         _pool_btn(kb, texts.BTN_PAUSE, PoolAction.PAUSE, pool.id)
     _pool_btn(kb, texts.BTN_DELETE, PoolAction.DELETE, pool.id)
     kb.button(text=texts.BTN_BACK_TO_LIST, callback_data=PoolCB(action=PoolAction.LIST))
-    kb.adjust(2, 3, 1, 1, 1, 1, 1)
+    kb.adjust(2, 2, 2, 1, 1, 1, 1, 1)
     return kb.as_markup()
 
 

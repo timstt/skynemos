@@ -7,7 +7,7 @@ from bot.keyboards.callbacks import PaymentAction, PaymentCB
 from bot.services.billing import billing_moment, latest_due_period
 from tests.conftest import KYIV
 from tests.fakes import GUEST, OWNER, Harness, buttons
-from tests.helpers import Clock, load_payments, make_job, setup_pool
+from tests.helpers import Clock, load_payments, make_job, setup_pool, update_pool
 
 STRANGER = {"id": 333, "is_bot": False, "first_name": "Чужий"}
 
@@ -134,3 +134,20 @@ async def test_status_before_first_billing(harness: Harness) -> None:
 async def test_status_without_own_pools(harness: Harness) -> None:
     await harness.send(GUEST, "/status")
     assert "немає зборів, де ти власник" in harness.api.texts_to(GUEST["id"])[-1]
+
+
+async def test_status_of_paused_pool_has_no_billing_date(harness: Harness) -> None:
+    setup = await setup_pool(
+        harness.engine,
+        owner_tg=OWNER["id"],
+        member_tgs=(GUEST["id"],),
+        active_since=utcnow() + timedelta(minutes=1),
+    )
+    await update_pool(harness.engine, setup.pool_id, is_paused=True)
+
+    await harness.send(OWNER, "/status")
+
+    status = harness.api.texts_to(OWNER["id"])[-1]
+    assert "на паузі" in status
+    assert "Перше списання" not in status
+    assert "Списань не буде, поки збір на паузі" in status

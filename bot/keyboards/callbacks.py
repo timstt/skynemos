@@ -27,6 +27,7 @@ class PoolAction(StrEnum):
     # власник
     INVITE = "invite"
     REGEN_INVITE = "regen"
+    EDIT_TITLE = "title"
     EDIT_AMOUNT = "amount"
     EDIT_DAY = "day"
     EDIT_DETAILS = "details"

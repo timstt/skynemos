@@ -1,8 +1,10 @@
 [project]
 name = "skynemos"
 version = "0.1.0"
-description = "Telegram-бот «Скинемось»: щомісячні збори за спільні підписки та витрати"
+description = "Telegram bot that automates recurring money collection for shared subscriptions and bills"
 readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "timstt" }]
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "aiogram>=3.13,<4",

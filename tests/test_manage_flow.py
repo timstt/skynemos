@@ -252,3 +252,18 @@ async def test_member_cannot_use_owner_actions(harness: Harness) -> None:
 def test_payment_cb_mark_paid_packs() -> None:
     packed = PaymentCB(action=PaymentAction.MARK_PAID, payment_id=7).pack()
     assert packed == "pay:mark:7"
+
+
+async def test_rename_pool_notifies_members(harness: Harness) -> None:
+    pool_id = await _setup(harness)
+
+    await harness.click(OWNER, pool_cb(PoolAction.EDIT_TITLE, pool_id))
+    await harness.send(OWNER, "x" * 65)
+    assert "від 1 до 64" in last_to(harness, OWNER)  # стан не скинувся
+    await harness.send(OWNER, "  YouTube   Premium ")
+
+    async with create_session_factory(harness.engine)() as s:
+        pool = await s.get(Pool, pool_id)
+        assert pool is not None and pool.title == "YouTube Premium"
+    assert "тепер називається <b>YouTube Premium</b>" in last_to(harness, GUEST)
+    assert "Збережено" in last_to(harness, OWNER)

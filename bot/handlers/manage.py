@@ -153,6 +153,7 @@ async def show_invite(
 # --- редагування суми, дня, реквізитів -----------------------------------------------
 
 _EDIT_STATES = {
+    PoolAction.EDIT_TITLE: (EditPool.title, texts.ask_new_title),
     PoolAction.EDIT_AMOUNT: (EditPool.amount, texts.ask_new_amount),
     PoolAction.EDIT_DAY: (EditPool.billing_day, texts.ask_new_day),
     PoolAction.EDIT_DETAILS: (EditPool.details, texts.ask_new_details),
@@ -195,6 +196,28 @@ async def _finish_edit(
     await state.clear()
     text, kb = await _owner_card(service, pool)
     await message.answer(f"{texts.SAVED}{note}\n\n{text}", reply_markup=kb)
+
+
+@router.message(EditPool.title, F.text)
+async def got_new_title(
+    message: Message, state: FSMContext, session: AsyncSession, user: User, bot: Bot
+) -> None:
+    service = PoolService(session)
+    try:
+        pool, old_title = await service.update_title(
+            (await state.get_data())["pool_id"], user, message.text or ""
+        )
+    except DomainError as exc:
+        await message.answer(texts.error_text(exc))
+        if exc.code is not ErrorCode.INVALID_TITLE:
+            await state.clear()
+        return
+    if pool.title != old_title:
+        members = await service.list_active_members(pool)
+        await _notify_users(
+            bot, session, (m.user for m in members), texts.member_title_changed(old_title, pool)
+        )
+    await _finish_edit(message, state, service, pool)
 
 
 @router.message(EditPool.amount, F.text)
