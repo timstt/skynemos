@@ -264,6 +264,13 @@ Python 3.12 · aiogram 3 · PostgreSQL 16 · SQLAlchemy 2.0 (async) + asyncpg ·
 APScheduler · pydantic-settings · Redis (optional) · Sentry (optional) ·
 pytest + pytest-asyncio · mypy · ruff · Docker Compose · GitHub Actions
 
+## How it was built
+
+Skynemos was developed with an AI coding assistant (Claude Code) under my direction.
+I wrote the specification, split the work into stages, made the product and design decisions
+(recorded in [DECISIONS.md](DECISIONS.md)), reviewed the result of every stage and tested the bot
+in Telegram myself. The AI wrote most of the code and tests to that specification.
+
 ## License
 
 [MIT](LICENSE) © 2026 timstt
